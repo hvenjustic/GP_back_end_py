@@ -17,6 +17,7 @@ class CrawlResult:
     external_links: list[str] | None
     canonical_url: str | None
     html: str | None
+    fit_markdown: str | None
 
 
 class Crawl4AIAdapter:
@@ -96,6 +97,14 @@ class Crawl4AIAdapter:
         canonical_url = _get_attr(result, ["canonical_url", "canonical"])
         html = _get_attr(result, ["html", "raw_html", "content", "markdown"])
 
+        markdown_obj = _get_attr(result, ["markdown"])
+        fit_markdown = None
+        if markdown_obj is not None:
+            if isinstance(markdown_obj, dict):
+                fit_markdown = markdown_obj.get("fit_markdown")
+            else:
+                fit_markdown = getattr(markdown_obj, "fit_markdown", None)
+
         links_obj = _get_attr(result, ["links", "link", "urls"])
         internal_links = _get_attr(result, ["internal_links", "internal_urls"])
         external_links = _get_attr(result, ["external_links", "external_urls"])
@@ -128,6 +137,7 @@ class Crawl4AIAdapter:
             external_links=external_list,
             canonical_url=canonical_url,
             html=html,
+            fit_markdown=fit_markdown,
         )
 
 

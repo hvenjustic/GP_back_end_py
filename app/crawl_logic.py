@@ -82,6 +82,7 @@ class FetchResult:
     external_links: list[str] | None
     canonical_url: str | None
     html: str | None
+    fit_markdown: str | None
     error: str | None = None
 
 
@@ -213,6 +214,7 @@ async def _fetch_with_retries(
                 external_links=result.external_links,
                 canonical_url=result.canonical_url,
                 html=result.html,
+                fit_markdown=result.fit_markdown,
             )
         except Exception as exc:  # pylint: disable=broad-except
             last_error = str(exc)
@@ -229,6 +231,7 @@ async def _fetch_with_retries(
         external_links=None,
         canonical_url=None,
         html=None,
+        fit_markdown=None,
         error=last_error,
     )
 
@@ -326,6 +329,7 @@ def crawl_job(job_id: str, session_factory, settings: Settings, adapter: Crawl4A
                 page.title = result.title
                 page.canonical_url = result.canonical_url
                 page.content_hash = _hash_content(result.html)
+                page.fit_markdown = result.fit_markdown
 
                 if result.success:
                     page.crawl_status = "CRAWLED"

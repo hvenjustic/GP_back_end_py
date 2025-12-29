@@ -13,6 +13,7 @@ from sqlalchemy import (
     String,
     Text,
 )
+from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
@@ -62,6 +63,7 @@ class SitePage(Base):
     title = Column(Text)
     canonical_url = Column(Text)
     content_hash = Column(String(64))
+    fit_markdown = Column(LONGTEXT)
     error_message = Column(Text)
 
     __table_args__ = (
