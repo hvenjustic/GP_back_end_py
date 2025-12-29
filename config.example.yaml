@@ -1,0 +1,27 @@
+# Copy to config.yaml and fill in your connections
+
+database_url: "mysql+pymysql://user:password@localhost:3306/crawl_db"
+redis_url: "redis://localhost:6379/0"
+
+crawl:
+  max_depth: 3
+  max_pages: 5000
+  concurrency: 5
+  timeout: 20
+  retries: 2
+  strip_query: false
+  strip_tracking_params: true
+  static_extensions:
+    - .jpg
+    - .png
+    - .gif
+    - .svg
+    - .css
+    - .js
+    - .ico
+    - .mp4
+    - .zip
+    - .rar
+    - .pdf
+  allowed_domains: []
+  store_edges: true
