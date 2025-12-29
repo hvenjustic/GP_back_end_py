@@ -11,7 +11,7 @@ from sqlalchemy.dialects.mysql import insert
 
 from app.config import Settings
 from app.crawler_adapter import Crawl4AIAdapter
-from app.models import CrawlJob, SiteEdge, SitePage
+from app.models import CrawlJob, SitePage
 
 TRACKING_PARAMS = {
     "utm_source",
@@ -36,7 +36,6 @@ class CrawlParams:
     strip_tracking_params: bool
     static_extensions: list[str]
     allowed_domains: list[str]
-    store_edges: bool
 
     def to_dict(self) -> dict:
         return {
@@ -49,7 +48,6 @@ class CrawlParams:
             "strip_tracking_params": self.strip_tracking_params,
             "static_extensions": self.static_extensions,
             "allowed_domains": self.allowed_domains,
-            "store_edges": self.store_edges,
         }
 
     @classmethod
@@ -66,7 +64,6 @@ class CrawlParams:
             ),
             static_extensions=data.get("static_extensions", settings.static_extensions),
             allowed_domains=data.get("allowed_domains", settings.allowed_domains),
-            store_edges=bool(data.get("store_edges", settings.store_edges)),
         )
 
 
@@ -124,7 +121,6 @@ def build_crawl_params(settings: Settings, request) -> CrawlParams:
         strip_tracking_params=strip_tracking_params,
         static_extensions=settings.static_extensions,
         allowed_domains=settings.allowed_domains,
-        store_edges=settings.store_edges,
     )
 
 
@@ -383,26 +379,6 @@ def crawl_job(job_id: str, session_factory, settings: Settings, adapter: Crawl4A
                     if new_pages:
                         db.add_all(new_pages)
 
-                if params.store_edges and raw_all_links:
-                    edge_rows = []
-                    for link in raw_all_links:
-                        normalized = normalize_url(link, page.url, params)
-                        if not normalized or should_filter(normalized, params):
-                            continue
-                        edge_rows.append(
-                            {
-                                "job_id": job_id,
-                                "src_url": page.url,
-                                "dst_url": normalized,
-                                "anchor_text": None,
-                                "is_internal": is_internal(
-                                    normalized, root_netloc, params.allowed_domains
-                                ),
-                            }
-                        )
-                    if edge_rows:
-                        stmt = insert(SiteEdge).values(edge_rows).prefix_with("IGNORE")
-                        db.execute(stmt)
 
             job.crawled_count += success_count
             job.failed_count += failed_count

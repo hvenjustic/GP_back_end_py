@@ -37,7 +37,6 @@ class Settings:
     strip_tracking_params: bool = True
     static_extensions: list[str] = field(default_factory=lambda: DEFAULT_STATIC_EXTENSIONS.copy())
     allowed_domains: list[str] = field(default_factory=list)
-    store_edges: bool = True
 
 
 def _parse_bool(value: Any, default: bool) -> bool:
@@ -117,5 +116,4 @@ def get_settings() -> Settings:
         if static_ext_raw is not None
         else DEFAULT_STATIC_EXTENSIONS.copy(),
         allowed_domains=_parse_list(allowed_domains_raw) if allowed_domains_raw is not None else [],
-        store_edges=_parse_bool(crawl.get("store_edges") or os.getenv("STORE_EDGES"), True),
     )

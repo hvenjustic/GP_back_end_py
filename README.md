@@ -6,7 +6,7 @@ FastAPI + Celery + Redis + MySQL service that crawls internal links with BFS usi
 
 - `POST /crawl` returns `job_id` immediately (async crawl)
 - `GET /status/{job_id}` for progress
-- Results stored in MySQL (`crawl_jobs` / `site_pages`, optional `site_edges`)
+- Results stored in MySQL (`crawl_jobs` / `site_pages`)
 
 ## Requirements
 
@@ -28,7 +28,6 @@ Supports `config.yaml` or `.env`:
 
 - copy `config.example.yaml` to `config.yaml`
 - or copy `.env.example` to `.env`
-- `store_edges` controls whether `site_edges` is written
 
 Optional Docker Compose:
 
@@ -172,5 +171,4 @@ If your version differs, adjust the adapter accordingly.
 
 - `crawl_jobs`: job status and progress
 - `site_pages`: pages and childrens (internal link array)
-- `site_edges`: optional edges table (all links)
 

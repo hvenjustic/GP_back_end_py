@@ -24,4 +24,3 @@ crawl:
     - .rar
     - .pdf
   allowed_domains: []
-  store_edges: true
