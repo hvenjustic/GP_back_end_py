@@ -12,6 +12,8 @@ class CrawlResult:
     final_url: str | None
     title: str | None
     status_code: int | None
+    success: bool
+    error_message: str | None
     links: list[str]
     internal_links: list[str] | None
     external_links: list[str] | None
@@ -105,6 +107,13 @@ class Crawl4AIAdapter:
             else:
                 fit_markdown = getattr(markdown_obj, "fit_markdown", None)
 
+        success = _get_attr(result, ["success"])
+        error_message = _get_attr(result, ["error_message", "error"])
+        if success is None:
+            success = bool(html)
+        if success:
+            error_message = None
+
         links_obj = _get_attr(result, ["links", "link", "urls"])
         internal_links = _get_attr(result, ["internal_links", "internal_urls"])
         external_links = _get_attr(result, ["external_links", "external_urls"])
@@ -132,6 +141,8 @@ class Crawl4AIAdapter:
             final_url=final_url,
             title=title,
             status_code=_coerce_int(status_code),
+            success=bool(success),
+            error_message=error_message,
             links=links or [],
             internal_links=internal_list,
             external_links=external_list,

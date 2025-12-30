@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Iterable
@@ -23,6 +24,9 @@ TRACKING_PARAMS = {
     "gclid",
     "fbclid",
 }
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -196,9 +200,32 @@ async def _fetch_with_retries(
     adapter: Crawl4AIAdapter, url: str, params: CrawlParams
 ) -> FetchResult:
     last_error: str | None = None
+    timeout = max(1, params.timeout)
     for attempt in range(params.retries + 1):
         try:
-            result = await adapter.fetch(url, timeout=params.timeout)
+            result = await asyncio.wait_for(
+                adapter.fetch(url, timeout=timeout),
+                timeout=timeout,
+            )
+            if not result.success:
+                last_error = result.error_message or "crawl failed"
+                if attempt < params.retries:
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                    continue
+                return FetchResult(
+                    url=url,
+                    success=False,
+                    status_code=result.status_code,
+                    title=result.title,
+                    final_url=result.final_url,
+                    links=result.links,
+                    internal_links=result.internal_links,
+                    external_links=result.external_links,
+                    canonical_url=result.canonical_url,
+                    html=result.html,
+                    fit_markdown=result.fit_markdown,
+                    error=last_error,
+                )
             return FetchResult(
                 url=url,
                 success=True,
@@ -212,6 +239,10 @@ async def _fetch_with_retries(
                 html=result.html,
                 fit_markdown=result.fit_markdown,
             )
+        except asyncio.TimeoutError:
+            last_error = f"timeout after {timeout}s"
+            if attempt < params.retries:
+                await asyncio.sleep(0.5 * (attempt + 1))
         except Exception as exc:  # pylint: disable=broad-except
             last_error = str(exc)
             if attempt < params.retries:
@@ -256,6 +287,15 @@ def crawl_job(job_id: str, session_factory, settings: Settings, adapter: Crawl4A
     params = CrawlParams.from_dict(job.params or {}, settings)
     root_netloc = urlparse(job.root_url).netloc.lower()
 
+    logger.info(
+        "crawl start job_id=%s root_url=%s max_depth=%s max_pages=%s concurrency=%s",
+        job_id,
+        job.root_url,
+        params.max_depth,
+        params.max_pages,
+        params.concurrency,
+    )
+
     db.query(SitePage).filter_by(job_id=job_id, crawl_status="PROCESSING").update(
         {"crawl_status": "PENDING"}
     )
@@ -276,10 +316,18 @@ def crawl_job(job_id: str, session_factory, settings: Settings, adapter: Crawl4A
                 job.updated_at = datetime.utcnow()
                 db.commit()
                 db.close()
+                logger.info("crawl cancelled job_id=%s", job_id)
                 return
 
             remaining_to_process = params.max_pages - (job.crawled_count + job.failed_count)
             if remaining_to_process <= 0:
+                logger.info(
+                    "crawl limit reached job_id=%s crawled=%s failed=%s discovered=%s",
+                    job_id,
+                    job.crawled_count,
+                    job.failed_count,
+                    job.discovered_count,
+                )
                 db.close()
                 return
 
@@ -292,11 +340,13 @@ def crawl_job(job_id: str, session_factory, settings: Settings, adapter: Crawl4A
             )
             if not pages:
                 db.close()
+                logger.info("no pending pages job_id=%s depth=%s", job_id, depth)
                 break
 
             for page in pages:
                 page.crawl_status = "PROCESSING"
             db.commit()
+            logger.info("crawl batch job_id=%s depth=%s size=%s", job_id, depth, len(pages))
             urls = [page.url for page in pages]
             db.close()
 
@@ -334,6 +384,7 @@ def crawl_job(job_id: str, session_factory, settings: Settings, adapter: Crawl4A
                     page.crawl_status = "FAILED"
                     page.error_message = result.error
                     failed_count += 1
+                    logger.warning("fetch failed job_id=%s url=%s error=%s", job_id, result.url, result.error)
 
                 raw_all_links = result.links
                 if not raw_all_links and (result.internal_links or result.external_links):
@@ -357,8 +408,8 @@ def crawl_job(job_id: str, session_factory, settings: Settings, adapter: Crawl4A
                 internal_links = _dedupe_preserve(internal_links)
                 page.childrens = internal_links
 
+                new_pages: list[SitePage] = []
                 if depth < params.max_depth and len(seen) < params.max_pages:
-                    new_pages: list[SitePage] = []
                     for child_url in internal_links:
                         if child_url in seen:
                             continue
@@ -378,6 +429,17 @@ def crawl_job(job_id: str, session_factory, settings: Settings, adapter: Crawl4A
                         )
                     if new_pages:
                         db.add_all(new_pages)
+
+                logger.info(
+                    "page processed job_id=%s url=%s depth=%s links=%s internal=%s new=%s status=%s",
+                    job_id,
+                    page.url,
+                    depth,
+                    len(raw_all_links),
+                    len(internal_links),
+                    len(new_pages),
+                    page.crawl_status,
+                )
 
 
             job.crawled_count += success_count

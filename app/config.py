@@ -37,6 +37,10 @@ class Settings:
     strip_tracking_params: bool = True
     static_extensions: list[str] = field(default_factory=lambda: DEFAULT_STATIC_EXTENSIONS.copy())
     allowed_domains: list[str] = field(default_factory=list)
+    auto_install_deps: bool = True
+    auto_install_playwright: bool = True
+    worker_concurrency: int = 1
+    worker_log_file: str = "worker.log"
 
 
 def _parse_bool(value: Any, default: bool) -> bool:
@@ -122,6 +126,7 @@ def get_settings() -> Settings:
     load_dotenv()
     data = _load_yaml_config()
     crawl = data.get("crawl", {}) if isinstance(data, dict) else {}
+    runtime = data.get("runtime", {}) if isinstance(data, dict) else {}
 
     static_ext_raw = (
         crawl.get("static_extensions")
@@ -168,4 +173,18 @@ def get_settings() -> Settings:
         if static_ext_raw is not None
         else DEFAULT_STATIC_EXTENSIONS.copy(),
         allowed_domains=_parse_list(allowed_domains_raw) if allowed_domains_raw is not None else [],
+        auto_install_deps=_parse_bool(
+            runtime.get("auto_install_deps") if isinstance(runtime, dict) else None, True
+        ),
+        auto_install_playwright=_parse_bool(
+            runtime.get("auto_install_playwright") if isinstance(runtime, dict) else None, True
+        ),
+        worker_concurrency=_parse_int(
+            runtime.get("worker_concurrency") if isinstance(runtime, dict) else None, 1
+        ),
+        worker_log_file=(
+            str(runtime.get("worker_log_file")).strip()
+            if isinstance(runtime, dict) and runtime.get("worker_log_file")
+            else "worker.log"
+        ),
     )

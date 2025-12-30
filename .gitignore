@@ -1,2 +1,7 @@
 __pycache__/
 *.pyc
+.idea
+.venv
+.deps_installed
+.playwright_installed
+worker.log

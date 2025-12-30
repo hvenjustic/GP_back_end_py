@@ -1,15 +1,74 @@
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+import logging
+import os
+from pathlib import Path
+
+from app.bootstrap import ensure_dependencies, ensure_playwright_browsers
+from app.logging_config import configure_logging
+
+ensure_dependencies()
+ensure_playwright_browsers()
+configure_logging()
+
 from fastapi import FastAPI
 
 from app.api import router
+from app.config import get_settings
 from app.db import init_db
 
-app = FastAPI(title="Site Crawl Service")
+logger = logging.getLogger(__name__)
+settings = get_settings()
 
 
-@app.on_event("startup")
-def on_startup() -> None:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     init_db()
+    yield
 
+
+app = FastAPI(title="Site Crawl Service", lifespan=lifespan)
 
 app.include_router(router)
 
+if __name__ == "__main__":
+    import subprocess
+    import sys
+
+    import uvicorn
+
+    def _start_worker() -> subprocess.Popen:
+        worker_concurrency = str(settings.worker_concurrency)
+        log_file = settings.worker_log_file
+        if not os.path.isabs(log_file):
+            log_file = str(Path(__file__).resolve().parent.parent / log_file)
+        cmd = [
+            sys.executable,
+            "-m",
+            "celery",
+            "-A",
+            "app.tasks",
+            "worker",
+            "--loglevel=info",
+            f"--concurrency={worker_concurrency}",
+            f"--logfile={log_file}",
+        ]
+        logger.info("starting worker: %s", " ".join(cmd))
+        return subprocess.Popen(cmd)
+
+    def _stop_worker(proc: subprocess.Popen) -> None:
+        if proc.poll() is not None:
+            return
+        logger.info("stopping worker pid=%s", proc.pid)
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+    worker = _start_worker()
+    try:
+        uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
+    finally:
+        _stop_worker(worker)

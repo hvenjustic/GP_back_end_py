@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+from app.bootstrap import ensure_dependencies, ensure_playwright_browsers
+from app.logging_config import configure_logging
+
+ensure_dependencies()
+ensure_playwright_browsers()
+configure_logging()
+
 from datetime import datetime
 
 from celery import Celery

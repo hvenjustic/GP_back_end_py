@@ -55,6 +55,11 @@ Notes:
 
 ## Run
 
+The worker is started automatically when running `python app/main.py`.
+Worker concurrency and log file are configured in `config.yaml` under `runtime`.
+
+Startup will auto-install dependencies and Playwright browsers unless disabled in `config.yaml` runtime section.
+
 Start API:
 
 ```bash

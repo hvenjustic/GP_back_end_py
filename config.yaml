@@ -34,3 +34,9 @@ crawl:
     - .rar
     - .pdf
   allowed_domains: []
+
+runtime:
+  auto_install_deps: true
+  auto_install_playwright: true
+  worker_concurrency: 1
+  worker_log_file: "worker.log"
