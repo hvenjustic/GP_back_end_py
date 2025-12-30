@@ -29,13 +29,29 @@ Supports `config.yaml` or `.env`:
 - copy `config.example.yaml` to `config.yaml`
 - or copy `.env.example` to `.env`
 
-Optional Docker Compose:
 
-```bash
-docker compose up -d
+Example config.yaml:
+
+```yaml
+mysql:
+  dbMysqlAddress:
+    - "host:port"
+  dbMysqlUserName: "root"
+  dbMysqlPassword: "password"
+  dbMysqlDatabaseName: "crawl_db"
+
+redis:
+  dbAddress:
+    - "host:port"
+  dbPassWord: "password"
+  dbRedisDb: 0
 ```
 
-Default MySQL is `root`/`root` with database `crawl_db`; update your config accordingly.
+Notes:
+
+- the first address in the list is used
+- Redis db index defaults to 0 if omitted
+
 
 ## Run
 

@@ -1,10 +1,20 @@
 # Copy to config.yaml and fill in your connections
 
-database_url: "mysql+pymysql://user:password@localhost:3306/crawl_db"
-redis_url: "redis://localhost:6379/0"
+mysql:
+  dbMysqlAddress:
+    - "www.hvenjustic.top:3306"
+  dbMysqlUserName: "root"
+  dbMysqlPassword: "hvenjustic"
+  dbMysqlDatabaseName: "graduation_project"
+
+redis:
+  dbAddress:
+    - "www.hvenjustic.top:6379"
+  dbPassWord: "hvenjustic"
+  dbRedisDb: 0
 
 crawl:
-  max_depth: 3
+  max_depth: 10
   max_pages: 5000
   concurrency: 5
   timeout: 20

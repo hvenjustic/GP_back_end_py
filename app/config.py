@@ -64,6 +64,20 @@ def _parse_list(value: Any) -> list[str]:
     return [v.strip() for v in str(value).split(",") if v.strip()]
 
 
+def _parse_first_address(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, list):
+        for item in value:
+            item_str = str(item).strip()
+            if item_str:
+                return item_str
+        return None
+    item_str = str(value).strip()
+    return item_str or None
+
+
+
 def _load_yaml_config() -> dict[str, Any]:
     config_path = Path(os.getenv("CONFIG_PATH", "config.yaml"))
     if not config_path.exists():
@@ -74,6 +88,33 @@ def _load_yaml_config() -> dict[str, Any]:
             return {}
     with config_path.open("r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
+
+
+def _build_mysql_url(mysql_cfg: Any, fallback: str) -> str:
+    if not isinstance(mysql_cfg, dict):
+        return fallback
+    addr = _parse_first_address(mysql_cfg.get("dbMysqlAddress"))
+    user = mysql_cfg.get("dbMysqlUserName")
+    password = mysql_cfg.get("dbMysqlPassword")
+    dbname = mysql_cfg.get("dbMysqlDatabaseName")
+    if addr and user and dbname and password is not None:
+        return f"mysql+pymysql://{user}:{password}@{addr}/{dbname}"
+    return fallback
+
+
+def _build_redis_url(redis_cfg: Any, fallback: str) -> str:
+    if not isinstance(redis_cfg, dict):
+        return fallback
+    addr = _parse_first_address(redis_cfg.get("dbAddress"))
+    if not addr:
+        return fallback
+    db_index = _parse_int(redis_cfg.get("dbRedisDb"), 0)
+    password = redis_cfg.get("dbPassWord")
+    if password:
+        return f"redis://:{password}@{addr}/{db_index}"
+    return f"redis://{addr}/{db_index}"
+
+
 
 
 @lru_cache
@@ -93,10 +134,21 @@ def get_settings() -> Settings:
         else os.getenv("ALLOWED_DOMAINS")
     )
 
-    database_url = data.get("database_url") or os.getenv(
+    database_url = os.getenv(
         "DATABASE_URL", "mysql+pymysql://user:password@localhost:3306/crawl_db"
     )
-    redis_url = data.get("redis_url") or os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+    if isinstance(data, dict):
+        if data.get("database_url"):
+            database_url = data["database_url"]
+        else:
+            database_url = _build_mysql_url(data.get("mysql"), database_url)
+
+        if data.get("redis_url"):
+            redis_url = data["redis_url"]
+        else:
+            redis_url = _build_redis_url(data.get("redis"), redis_url)
 
     return Settings(
         database_url=database_url,

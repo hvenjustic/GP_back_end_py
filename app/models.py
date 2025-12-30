@@ -64,6 +64,7 @@ class SitePage(Base):
     canonical_url = Column(String(128))
     content_hash = Column(String(64))
     fit_markdown = Column(LONGTEXT)
+    processed_markdown = Column(LONGTEXT)
     error_message = Column(Text)
 
     __table_args__ = (
