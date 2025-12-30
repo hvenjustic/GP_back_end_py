@@ -52,6 +52,16 @@ Notes:
 - the first address in the list is used
 - Redis db index defaults to 0 if omitted
 
+Markdown filter (controls `fit_markdown` generation):
+
+```yaml
+crawl:
+  markdown_filter:
+    threshold: 0.22
+    threshold_type: "dynamic"
+    min_word_threshold: 0
+    ignore_links: true
+```
 
 ## Run
 

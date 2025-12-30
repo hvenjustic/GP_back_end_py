@@ -44,7 +44,7 @@ def crawl_job_task(self, job_id: str) -> None:
         db.commit()
         db.close()
 
-        adapter = Crawl4AIAdapter()
+        adapter = Crawl4AIAdapter(settings)
         crawl_job(job_id, SessionLocal, settings, adapter)
 
         db = SessionLocal()

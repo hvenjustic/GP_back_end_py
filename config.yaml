@@ -15,7 +15,7 @@ redis:
 
 crawl:
   max_depth: 10
-  max_pages: 5000
+  max_pages: 500
   concurrency: 5
   timeout: 20
   retries: 2
@@ -34,6 +34,11 @@ crawl:
     - .rar
     - .pdf
   allowed_domains: []
+  markdown_filter:
+    threshold: 0.20
+    threshold_type: "dynamic"
+    min_word_threshold: 0
+    ignore_links: true
 
 runtime:
   auto_install_deps: true

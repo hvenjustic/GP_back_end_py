@@ -37,6 +37,10 @@ class Settings:
     strip_tracking_params: bool = True
     static_extensions: list[str] = field(default_factory=lambda: DEFAULT_STATIC_EXTENSIONS.copy())
     allowed_domains: list[str] = field(default_factory=list)
+    markdown_filter_threshold: float = 0.22
+    markdown_filter_threshold_type: str = "dynamic"
+    markdown_filter_min_word_threshold: int = 0
+    markdown_ignore_links: bool = True
     auto_install_deps: bool = True
     auto_install_playwright: bool = True
     worker_concurrency: int = 1
@@ -58,6 +62,17 @@ def _parse_int(value: Any, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+
+def _parse_float(value: Any, default: float) -> float:
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
 
 
 def _parse_list(value: Any) -> list[str]:
@@ -139,6 +154,10 @@ def get_settings() -> Settings:
         else os.getenv("ALLOWED_DOMAINS")
     )
 
+    markdown_cfg = crawl.get("markdown_filter", {}) if isinstance(crawl, dict) else {}
+    if not isinstance(markdown_cfg, dict):
+        markdown_cfg = {}
+
     database_url = os.getenv(
         "DATABASE_URL", "mysql+pymysql://user:password@localhost:3306/crawl_db"
     )
@@ -173,6 +192,28 @@ def get_settings() -> Settings:
         if static_ext_raw is not None
         else DEFAULT_STATIC_EXTENSIONS.copy(),
         allowed_domains=_parse_list(allowed_domains_raw) if allowed_domains_raw is not None else [],
+        markdown_filter_threshold=_parse_float(
+            markdown_cfg.get("threshold") or os.getenv("MARKDOWN_FILTER_THRESHOLD"),
+            0.22,
+        ),
+        markdown_filter_threshold_type=(
+            str(
+                markdown_cfg.get("threshold_type")
+                or os.getenv("MARKDOWN_FILTER_THRESHOLD_TYPE")
+                or "dynamic"
+            ).strip()
+            or "dynamic"
+        ),
+        markdown_filter_min_word_threshold=_parse_int(
+            markdown_cfg.get("min_word_threshold")
+            or os.getenv("MARKDOWN_FILTER_MIN_WORD_THRESHOLD"),
+            0,
+        ),
+        markdown_ignore_links=_parse_bool(
+            markdown_cfg.get("ignore_links")
+            or os.getenv("MARKDOWN_IGNORE_LINKS"),
+            True,
+        ),
         auto_install_deps=_parse_bool(
             runtime.get("auto_install_deps") if isinstance(runtime, dict) else None, True
         ),

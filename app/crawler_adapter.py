@@ -5,6 +5,8 @@ import inspect
 from dataclasses import dataclass
 from typing import Any
 
+from app.config import Settings
+
 
 @dataclass
 class CrawlResult:
@@ -23,7 +25,8 @@ class CrawlResult:
 
 
 class Crawl4AIAdapter:
-    def __init__(self) -> None:
+    def __init__(self, settings: Settings | None = None) -> None:
+        self._settings = settings
         self._module = self._load_module()
         self._crawler, self._is_async = self._init_crawler(self._module)
 
@@ -43,16 +46,65 @@ class Crawl4AIAdapter:
             return module.Crawler(), False
         raise RuntimeError("Unsupported crawl4ai crawler type")
 
+    def _build_markdown_generator(self):
+        if not self._settings:
+            return None
+        generator_cls = getattr(self._module, "DefaultMarkdownGenerator", None)
+        filter_cls = getattr(self._module, "PruningContentFilter", None)
+        if not generator_cls or not filter_cls:
+            return None
+        try:
+            prune_filter = filter_cls(
+                threshold=self._settings.markdown_filter_threshold,
+                threshold_type=self._settings.markdown_filter_threshold_type,
+                min_word_threshold=self._settings.markdown_filter_min_word_threshold,
+            )
+            return generator_cls(
+                content_filter=prune_filter,
+                options={"ignore_links": self._settings.markdown_ignore_links},
+            )
+        except Exception:
+            return None
+
     def _build_config(self, timeout: int):
         config_cls = getattr(self._module, "CrawlerRunConfig", None) or getattr(
             self._module, "RunConfig", None
         )
         if not config_cls:
             return None
+
         try:
-            return config_cls(timeout=timeout)
+            params = inspect.signature(config_cls).parameters
+        except (TypeError, ValueError):
+            params = {}
+
+        accepts_kwargs = any(
+            param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values()
+        )
+
+        kwargs = {}
+        if accepts_kwargs or "timeout" in params:
+            kwargs["timeout"] = timeout
+        if accepts_kwargs or "page_timeout" in params:
+            kwargs["page_timeout"] = int(timeout * 1000)
+
+        markdown_generator = self._build_markdown_generator()
+        if markdown_generator is not None and (accepts_kwargs or "markdown_generator" in params):
+            kwargs["markdown_generator"] = markdown_generator
+
+        if not kwargs:
+            try:
+                return config_cls()
+            except TypeError:
+                return None
+
+        try:
+            return config_cls(**kwargs)
         except TypeError:
-            return config_cls()
+            try:
+                return config_cls()
+            except TypeError:
+                return None
 
     async def fetch(self, url: str, timeout: int) -> CrawlResult:
         config = self._build_config(timeout)
