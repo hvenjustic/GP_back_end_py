@@ -61,7 +61,10 @@ class Crawl4AIAdapter:
             )
             return generator_cls(
                 content_filter=prune_filter,
-                options={"ignore_links": self._settings.markdown_ignore_links},
+                options={
+                    "ignore_links": self._settings.markdown_ignore_links,
+                    "ignore_images": self._settings.markdown_ignore_images,
+                },
             )
         except Exception:
             return None

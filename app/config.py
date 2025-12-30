@@ -41,6 +41,7 @@ class Settings:
     markdown_filter_threshold_type: str = "dynamic"
     markdown_filter_min_word_threshold: int = 0
     markdown_ignore_links: bool = True
+    markdown_ignore_images: bool = True
     auto_install_deps: bool = True
     auto_install_playwright: bool = True
     worker_concurrency: int = 1
@@ -212,6 +213,11 @@ def get_settings() -> Settings:
         markdown_ignore_links=_parse_bool(
             markdown_cfg.get("ignore_links")
             or os.getenv("MARKDOWN_IGNORE_LINKS"),
+            True,
+        ),
+        markdown_ignore_images=_parse_bool(
+            markdown_cfg.get("ignore_images")
+            or os.getenv("MARKDOWN_IGNORE_IMAGES"),
             True,
         ),
         auto_install_deps=_parse_bool(

@@ -61,6 +61,7 @@ crawl:
     threshold_type: "dynamic"
     min_word_threshold: 0
     ignore_links: true
+    ignore_images: true
 ```
 
 ## Run
