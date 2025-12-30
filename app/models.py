@@ -27,7 +27,7 @@ class CrawlJob(Base):
     __tablename__ = "crawl_jobs"
 
     job_id = Column(String(36), primary_key=True)
-    root_url = Column(String(128), nullable=False)
+    root_url = Column(String(1024), nullable=False)
     status = Column(String(20), nullable=False, default="PENDING")
 
     created_at = Column(DateTime, default=utcnow, nullable=False)
@@ -49,10 +49,11 @@ class SitePage(Base):
     __tablename__ = "site_pages"
 
     job_id = Column(String(36), nullable=False)
-    url = Column(String(128), nullable=False)
+    url = Column(String(1024), nullable=False)
+    url_hash = Column(String(64), nullable=False)
 
     childrens = Column(JSON, nullable=False, default=list)
-    parent_url = Column(String(128))
+    parent_url = Column(String(1024))
     depth = Column(Integer, default=0, nullable=False)
 
     crawled = Column(Boolean, default=False, nullable=False)
@@ -61,15 +62,16 @@ class SitePage(Base):
 
     status_code = Column(Integer)
     title = Column(Text)
-    canonical_url = Column(String(128))
+    canonical_url = Column(String(1024))
     content_hash = Column(String(64))
     fit_markdown = Column(LONGTEXT)
     processed_markdown = Column(LONGTEXT)
     error_message = Column(Text)
 
     __table_args__ = (
-        PrimaryKeyConstraint("job_id", "url", name="pk_site_pages"),
+        PrimaryKeyConstraint("job_id", "url_hash", name="pk_site_pages"),
         Index("idx_site_pages_job_id", "job_id"),
+        Index("idx_site_pages_job_url_hash", "job_id", "url_hash"),
         Index("idx_site_pages_job_depth", "job_id", "depth"),
     )
 

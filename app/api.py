@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.crawl_logic import build_crawl_params, normalize_url
+from app.crawl_logic import build_crawl_params, hash_url, normalize_url
 from app.db import get_db
 from app.models import CrawlJob, SitePage
 from app.tasks import crawl_job_task
@@ -84,6 +84,7 @@ def create_crawl(request: CrawlRequest, db: Session = Depends(get_db)) -> CrawlR
     root_page = SitePage(
         job_id=job_id,
         url=normalized_root,
+        url_hash=hash_url(normalized_root),
         childrens=[],
         parent_url=None,
         depth=0,

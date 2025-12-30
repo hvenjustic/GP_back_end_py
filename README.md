@@ -191,5 +191,5 @@ If your version differs, adjust the adapter accordingly.
 ## Tables
 
 - `crawl_jobs`: job status and progress
-- `site_pages`: pages and childrens (internal link array)
+- `site_pages`: pages and childrens (internal link array); `url` stores full URL (VARCHAR(1024)) and `url_hash` (SHA-256 hex) is used for equality lookups with `job_id`
 

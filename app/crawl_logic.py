@@ -196,6 +196,11 @@ def _hash_content(html: str | None) -> str | None:
     return hashlib.sha256(html.encode("utf-8")).hexdigest()
 
 
+def hash_url(url: str) -> str:
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()
+
+
+
 async def _fetch_with_retries(
     adapter: Crawl4AIAdapter, url: str, params: CrawlParams
 ) -> FetchResult:
@@ -284,171 +289,203 @@ def crawl_job(job_id: str, session_factory, settings: Settings, adapter: Crawl4A
         db.close()
         return
 
-    params = CrawlParams.from_dict(job.params or {}, settings)
-    root_netloc = urlparse(job.root_url).netloc.lower()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
-    logger.info(
-        "crawl start job_id=%s root_url=%s max_depth=%s max_pages=%s concurrency=%s",
-        job_id,
-        job.root_url,
-        params.max_depth,
-        params.max_pages,
-        params.concurrency,
-    )
+    def run_async(coro):
+        return loop.run_until_complete(coro)
 
-    db.query(SitePage).filter_by(job_id=job_id, crawl_status="PROCESSING").update(
-        {"crawl_status": "PENDING"}
-    )
-    db.commit()
+    try:
+        params = CrawlParams.from_dict(job.params or {}, settings)
+        root_netloc = urlparse(job.root_url).netloc.lower()
 
-    seen = set(url for (url,) in db.query(SitePage.url).filter_by(job_id=job_id).all())
-    db.close()
+        logger.info(
+            "crawl start job_id=%s root_url=%s max_depth=%s max_pages=%s concurrency=%s",
+            job_id,
+            job.root_url,
+            params.max_depth,
+            params.max_pages,
+            params.concurrency,
+        )
 
-    for depth in range(params.max_depth + 1):
-        while True:
-            db = session_factory()
-            job = db.query(CrawlJob).filter_by(job_id=job_id).first()
-            if not job:
+        db.query(SitePage).filter_by(job_id=job_id, crawl_status="PROCESSING").update(
+            {"crawl_status": "PENDING"}
+        )
+        db.commit()
+
+        seen_hashes = {
+            url_hash
+            for (url_hash,) in db.query(SitePage.url_hash)
+            .filter_by(job_id=job_id)
+            .all()
+            if url_hash
+        }
+        db.close()
+
+        for depth in range(params.max_depth + 1):
+            while True:
+                db = session_factory()
+                job = db.query(CrawlJob).filter_by(job_id=job_id).first()
+                if not job:
+                    db.close()
+                    return
+                if job.status == "CANCELLED":
+                    job.finished_at = datetime.utcnow()
+                    job.updated_at = datetime.utcnow()
+                    db.commit()
+                    db.close()
+                    logger.info("crawl cancelled job_id=%s", job_id)
+                    return
+
+                remaining_to_process = params.max_pages - (job.crawled_count + job.failed_count)
+                if remaining_to_process <= 0:
+                    logger.info(
+                        "crawl limit reached job_id=%s crawled=%s failed=%s discovered=%s",
+                        job_id,
+                        job.crawled_count,
+                        job.failed_count,
+                        job.discovered_count,
+                    )
+                    db.close()
+                    return
+
+                batch_size = min(params.concurrency, remaining_to_process)
+                pages = (
+                    db.query(SitePage)
+                    .filter_by(job_id=job_id, depth=depth, crawl_status="PENDING")
+                    .limit(batch_size)
+                    .all()
+                )
+                if not pages:
+                    db.close()
+                    logger.info("no pending pages job_id=%s depth=%s", job_id, depth)
+                    break
+
+                for page in pages:
+                    page.crawl_status = "PROCESSING"
+                db.commit()
+                logger.info("crawl batch job_id=%s depth=%s size=%s", job_id, depth, len(pages))
+                urls = [page.url for page in pages]
                 db.close()
-                return
-            if job.status == "CANCELLED":
-                job.finished_at = datetime.utcnow()
+
+                results = run_async(crawl_batch(adapter, urls, params))
+
+                db = session_factory()
+                job = db.query(CrawlJob).filter_by(job_id=job_id).first()
+                if not job:
+                    db.close()
+                    return
+
+                success_count = 0
+                failed_count = 0
+                for result in results:
+                    page = (
+                        db.query(SitePage)
+                        .filter_by(job_id=job_id, url_hash=hash_url(result.url))
+                        .first()
+                    )
+                    if not page:
+                        continue
+
+                    page.last_crawled = datetime.utcnow()
+                    page.crawled = True
+                    page.status_code = result.status_code
+                    page.title = result.title
+                    page.canonical_url = result.canonical_url
+                    page.content_hash = _hash_content(result.html)
+                    page.fit_markdown = result.fit_markdown
+
+                    if result.success:
+                        page.crawl_status = "CRAWLED"
+                        success_count += 1
+                    else:
+                        page.crawl_status = "FAILED"
+                        page.error_message = result.error
+                        failed_count += 1
+                        logger.warning(
+                            "fetch failed job_id=%s url=%s error=%s",
+                            job_id,
+                            result.url,
+                            result.error,
+                        )
+
+                    raw_all_links = result.links
+                    if not raw_all_links and (result.internal_links or result.external_links):
+                        raw_all_links = (result.internal_links or []) + (
+                            result.external_links or []
+                        )
+
+                    raw_internal_links = (
+                        result.internal_links
+                        if result.internal_links is not None
+                        else raw_all_links
+                    )
+
+                    internal_links: list[str] = []
+                    for link in raw_internal_links:
+                        normalized = normalize_url(link, page.url, params)
+                        if not normalized or should_filter(normalized, params):
+                            continue
+                        if not is_internal(normalized, root_netloc, params.allowed_domains):
+                            continue
+                        internal_links.append(normalized)
+
+                    internal_links = _dedupe_preserve(internal_links)
+                    page.childrens = internal_links
+
+                    new_pages: list[SitePage] = []
+                    if depth < params.max_depth and len(seen_hashes) < params.max_pages:
+                        for child_url in internal_links:
+                            child_hash = hash_url(child_url)
+                            if child_hash in seen_hashes:
+                                continue
+                            if len(seen_hashes) >= params.max_pages:
+                                break
+                            seen_hashes.add(child_hash)
+                            new_pages.append(
+                                SitePage(
+                                    job_id=job_id,
+                                    url=child_url,
+                                    url_hash=child_hash,
+                                    childrens=[],
+                                    parent_url=page.url,
+                                    depth=depth + 1,
+                                    crawled=False,
+                                    crawl_status="PENDING",
+                                )
+                            )
+                        if new_pages:
+                            db.add_all(new_pages)
+
+                    logger.info(
+                        "page processed job_id=%s url=%s depth=%s links=%s internal=%s new=%s status=%s",
+                        job_id,
+                        page.url,
+                        depth,
+                        len(raw_all_links),
+                        len(internal_links),
+                        len(new_pages),
+                        page.crawl_status,
+                    )
+
+                job.crawled_count += success_count
+                job.failed_count += failed_count
+                job.discovered_count = len(seen_hashes)
+                job.queued_count = max(
+                    0, job.discovered_count - job.crawled_count - job.failed_count
+                )
+                job.current_depth = depth
                 job.updated_at = datetime.utcnow()
                 db.commit()
                 db.close()
-                logger.info("crawl cancelled job_id=%s", job_id)
-                return
-
-            remaining_to_process = params.max_pages - (job.crawled_count + job.failed_count)
-            if remaining_to_process <= 0:
-                logger.info(
-                    "crawl limit reached job_id=%s crawled=%s failed=%s discovered=%s",
-                    job_id,
-                    job.crawled_count,
-                    job.failed_count,
-                    job.discovered_count,
-                )
-                db.close()
-                return
-
-            batch_size = min(params.concurrency, remaining_to_process)
-            pages = (
-                db.query(SitePage)
-                .filter_by(job_id=job_id, depth=depth, crawl_status="PENDING")
-                .limit(batch_size)
-                .all()
-            )
-            if not pages:
-                db.close()
-                logger.info("no pending pages job_id=%s depth=%s", job_id, depth)
-                break
-
-            for page in pages:
-                page.crawl_status = "PROCESSING"
-            db.commit()
-            logger.info("crawl batch job_id=%s depth=%s size=%s", job_id, depth, len(pages))
-            urls = [page.url for page in pages]
-            db.close()
-
-            results = asyncio.run(crawl_batch(adapter, urls, params))
-
-            db = session_factory()
-            job = db.query(CrawlJob).filter_by(job_id=job_id).first()
-            if not job:
-                db.close()
-                return
-
-            success_count = 0
-            failed_count = 0
-            for result in results:
-                page = (
-                    db.query(SitePage)
-                    .filter_by(job_id=job_id, url=result.url)
-                    .first()
-                )
-                if not page:
-                    continue
-
-                page.last_crawled = datetime.utcnow()
-                page.crawled = True
-                page.status_code = result.status_code
-                page.title = result.title
-                page.canonical_url = result.canonical_url
-                page.content_hash = _hash_content(result.html)
-                page.fit_markdown = result.fit_markdown
-
-                if result.success:
-                    page.crawl_status = "CRAWLED"
-                    success_count += 1
-                else:
-                    page.crawl_status = "FAILED"
-                    page.error_message = result.error
-                    failed_count += 1
-                    logger.warning("fetch failed job_id=%s url=%s error=%s", job_id, result.url, result.error)
-
-                raw_all_links = result.links
-                if not raw_all_links and (result.internal_links or result.external_links):
-                    raw_all_links = (result.internal_links or []) + (
-                        result.external_links or []
-                    )
-
-                raw_internal_links = (
-                    result.internal_links if result.internal_links is not None else raw_all_links
-                )
-
-                internal_links: list[str] = []
-                for link in raw_internal_links:
-                    normalized = normalize_url(link, page.url, params)
-                    if not normalized or should_filter(normalized, params):
-                        continue
-                    if not is_internal(normalized, root_netloc, params.allowed_domains):
-                        continue
-                    internal_links.append(normalized)
-
-                internal_links = _dedupe_preserve(internal_links)
-                page.childrens = internal_links
-
-                new_pages: list[SitePage] = []
-                if depth < params.max_depth and len(seen) < params.max_pages:
-                    for child_url in internal_links:
-                        if child_url in seen:
-                            continue
-                        if len(seen) >= params.max_pages:
-                            break
-                        seen.add(child_url)
-                        new_pages.append(
-                            SitePage(
-                                job_id=job_id,
-                                url=child_url,
-                                childrens=[],
-                                parent_url=page.url,
-                                depth=depth + 1,
-                                crawled=False,
-                                crawl_status="PENDING",
-                            )
-                        )
-                    if new_pages:
-                        db.add_all(new_pages)
-
-                logger.info(
-                    "page processed job_id=%s url=%s depth=%s links=%s internal=%s new=%s status=%s",
-                    job_id,
-                    page.url,
-                    depth,
-                    len(raw_all_links),
-                    len(internal_links),
-                    len(new_pages),
-                    page.crawl_status,
-                )
-
-
-            job.crawled_count += success_count
-            job.failed_count += failed_count
-            job.discovered_count = len(seen)
-            job.queued_count = max(
-                0, job.discovered_count - job.crawled_count - job.failed_count
-            )
-            job.current_depth = depth
-            job.updated_at = datetime.utcnow()
-            db.commit()
-            db.close()
+    finally:
+        try:
+            run_async(adapter.aclose())
+        except Exception:
+            logger.warning("failed to close crawler", exc_info=True)
+        try:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        except Exception:
+            logger.warning("failed to shutdown async generators", exc_info=True)
+        loop.close()
+        asyncio.set_event_loop(None)

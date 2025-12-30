@@ -150,6 +150,16 @@ class Crawl4AIAdapter:
             html=html,
             fit_markdown=fit_markdown,
         )
+    async def aclose(self) -> None:
+        if not self._is_async:
+            return
+        close_method = getattr(self._crawler, "close", None)
+        if not close_method:
+            return
+        result = close_method()
+        if inspect.isawaitable(result):
+            await result
+
 
 
 def _get_attr(obj: Any, names: list[str]) -> Any:
