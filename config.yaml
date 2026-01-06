@@ -14,7 +14,7 @@ redis:
   dbRedisDb: 0
 
 crawl:
-  max_depth: 10
+  max_depth: 4
   max_pages: 500
   concurrency: 5
   timeout: 20

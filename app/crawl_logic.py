@@ -320,6 +320,7 @@ def crawl_job(job_id: str, session_factory, settings: Settings, adapter: Crawl4A
             .all()
             if url_hash
         }
+        child_seen_hashes = set(seen_hashes)
         db.close()
 
         for depth in range(params.max_depth + 1):
@@ -431,14 +432,20 @@ def crawl_job(job_id: str, session_factory, settings: Settings, adapter: Crawl4A
                         internal_links.append(normalized)
 
                     internal_links = _dedupe_preserve(internal_links)
-                    page.childrens = internal_links
+
+                    filtered_children: list[tuple[str, str]] = []
+                    for child_url in internal_links:
+                        child_hash = hash_url(child_url)
+                        if child_hash in child_seen_hashes:
+                            continue
+                        child_seen_hashes.add(child_hash)
+                        filtered_children.append((child_url, child_hash))
+
+                    page.childrens = [child_url for child_url, _ in filtered_children]
 
                     new_pages: list[SitePage] = []
                     if depth < params.max_depth and len(seen_hashes) < params.max_pages:
-                        for child_url in internal_links:
-                            child_hash = hash_url(child_url)
-                            if child_hash in seen_hashes:
-                                continue
+                        for child_url, child_hash in filtered_children:
                             if len(seen_hashes) >= params.max_pages:
                                 break
                             seen_hashes.add(child_hash)
