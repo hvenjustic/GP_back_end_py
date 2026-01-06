@@ -5,3 +5,7 @@ __pycache__/
 .deps_installed
 .playwright_installed
 worker.log
+
+# local configs (may contain secrets)
+*.yaml
+*.yml
