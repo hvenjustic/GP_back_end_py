@@ -18,7 +18,7 @@
   * 后台任务可并发抓取（可配置并发数）
   * `GET /status/{job_id}` 可查到实时进度
 * 数据库：MySQL 8.0（使用 SQLAlchemy 或者 mysqlclient/pymysql 均可；推荐 SQLAlchemy）
-* 配置：把 MySQL/Redis 连接信息放在 `config.yaml` 或 `.env`（我会自己填密码地址）
+* 配置：把 MySQL/Redis 连接信息放在 `config.yaml`（我会自己填密码地址）
 
 ### 爬取策略（必须）
 
@@ -169,7 +169,7 @@
 * `app/services/crawler_adapter.py`（crawl4ai 封装）
 * `app/services/crawl_service.py`（BFS 调度、规范化、过滤）
 * `app/core/logger.py`（日志）
-* `config.example.yaml` 或 `.env.example`
+* `config.example.yaml`
 * `requirements.txt`
 * `docker-compose.yml`（可选：包含 redis + mysql；mysql 密码我会自己改）
 * `README.md`（启动方式、示例调用、状态字段解释）

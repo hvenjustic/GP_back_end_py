@@ -24,13 +24,7 @@ pip install -r requirements.txt
 
 ## Configuration
 
-Supports `config.yaml` or `.env`:
-
-- copy `config.example.yaml` to `config.yaml`
-- or copy `.env.example` to `.env`
-
-
-Example config.yaml:
+Use `config.yaml` in the project root:
 
 ```yaml
 mysql:

@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import yaml
-from dotenv import load_dotenv
 
 DEFAULT_STATIC_EXTENSIONS = [
     ".jpg",
@@ -99,13 +97,9 @@ def _parse_first_address(value: Any) -> str | None:
 
 
 def _load_yaml_config() -> dict[str, Any]:
-    config_path = Path(os.getenv("CONFIG_PATH", "config.yaml"))
+    config_path = Path(__file__).resolve().parent.parent / "config.yaml"
     if not config_path.exists():
-        alt_path = Path("config.yml")
-        if alt_path.exists():
-            config_path = alt_path
-        else:
-            return {}
+        return {}
     with config_path.open("r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
@@ -139,30 +133,23 @@ def _build_redis_url(redis_cfg: Any, fallback: str) -> str:
 
 @lru_cache
 def get_settings() -> Settings:
-    load_dotenv()
     data = _load_yaml_config()
     crawl = data.get("crawl", {}) if isinstance(data, dict) else {}
     runtime = data.get("runtime", {}) if isinstance(data, dict) else {}
 
     static_ext_raw = (
-        crawl.get("static_extensions")
-        if isinstance(crawl, dict) and "static_extensions" in crawl
-        else os.getenv("STATIC_EXTENSIONS")
+        crawl.get("static_extensions") if isinstance(crawl, dict) else None
     )
     allowed_domains_raw = (
-        crawl.get("allowed_domains")
-        if isinstance(crawl, dict) and "allowed_domains" in crawl
-        else os.getenv("ALLOWED_DOMAINS")
+        crawl.get("allowed_domains") if isinstance(crawl, dict) else None
     )
 
     markdown_cfg = crawl.get("markdown_filter", {}) if isinstance(crawl, dict) else {}
     if not isinstance(markdown_cfg, dict):
         markdown_cfg = {}
 
-    database_url = os.getenv(
-        "DATABASE_URL", "mysql+pymysql://user:password@localhost:3306/crawl_db"
-    )
-    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    database_url = "mysql+pymysql://user:password@localhost:3306/crawl_db"
+    redis_url = "redis://localhost:6379/0"
 
     if isinstance(data, dict):
         if data.get("database_url"):
@@ -178,46 +165,34 @@ def get_settings() -> Settings:
     return Settings(
         database_url=database_url,
         redis_url=redis_url,
-        max_depth=_parse_int(crawl.get("max_depth") or os.getenv("MAX_DEPTH"), 3),
-        max_pages=_parse_int(crawl.get("max_pages") or os.getenv("MAX_PAGES"), 5000),
-        concurrency=_parse_int(crawl.get("concurrency") or os.getenv("CONCURRENCY"), 5),
-        timeout=_parse_int(crawl.get("timeout") or os.getenv("TIMEOUT"), 20),
-        retries=_parse_int(crawl.get("retries") or os.getenv("RETRIES"), 2),
-        strip_query=_parse_bool(
-            crawl.get("strip_query") or os.getenv("STRIP_QUERY"), False
-        ),
-        strip_tracking_params=_parse_bool(
-            crawl.get("strip_tracking_params") or os.getenv("STRIP_TRACKING_PARAMS"), True
-        ),
+        max_depth=_parse_int(crawl.get("max_depth"), 3),
+        max_pages=_parse_int(crawl.get("max_pages"), 5000),
+        concurrency=_parse_int(crawl.get("concurrency"), 5),
+        timeout=_parse_int(crawl.get("timeout"), 20),
+        retries=_parse_int(crawl.get("retries"), 2),
+        strip_query=_parse_bool(crawl.get("strip_query"), False),
+        strip_tracking_params=_parse_bool(crawl.get("strip_tracking_params"), True),
         static_extensions=_parse_list(static_ext_raw)
         if static_ext_raw is not None
         else DEFAULT_STATIC_EXTENSIONS.copy(),
         allowed_domains=_parse_list(allowed_domains_raw) if allowed_domains_raw is not None else [],
         markdown_filter_threshold=_parse_float(
-            markdown_cfg.get("threshold") or os.getenv("MARKDOWN_FILTER_THRESHOLD"),
+            markdown_cfg.get("threshold"),
             0.22,
         ),
         markdown_filter_threshold_type=(
-            str(
-                markdown_cfg.get("threshold_type")
-                or os.getenv("MARKDOWN_FILTER_THRESHOLD_TYPE")
-                or "dynamic"
-            ).strip()
-            or "dynamic"
+            str(markdown_cfg.get("threshold_type") or "dynamic").strip() or "dynamic"
         ),
         markdown_filter_min_word_threshold=_parse_int(
-            markdown_cfg.get("min_word_threshold")
-            or os.getenv("MARKDOWN_FILTER_MIN_WORD_THRESHOLD"),
+            markdown_cfg.get("min_word_threshold"),
             0,
         ),
         markdown_ignore_links=_parse_bool(
-            markdown_cfg.get("ignore_links")
-            or os.getenv("MARKDOWN_IGNORE_LINKS"),
+            markdown_cfg.get("ignore_links"),
             True,
         ),
         markdown_ignore_images=_parse_bool(
-            markdown_cfg.get("ignore_images")
-            or os.getenv("MARKDOWN_IGNORE_IMAGES"),
+            markdown_cfg.get("ignore_images"),
             True,
         ),
         auto_install_deps=_parse_bool(
