@@ -11,7 +11,7 @@ from urllib.parse import parse_qsl, urljoin, urlparse, urlunparse, urlencode, ur
 from sqlalchemy.dialects.mysql import insert
 
 from app.config import Settings
-from app.crawler_adapter import Crawl4AIAdapter
+from app.services.crawler_adapter import Crawl4AIAdapter
 from app.models import CrawlJob, SitePage
 
 TRACKING_PARAMS = {

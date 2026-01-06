@@ -80,7 +80,7 @@ uvicorn app.main:app --reload
 Start worker:
 
 ```bash
-celery -A app.tasks worker --loglevel=info
+celery -A app.services.crawl_tasks worker --loglevel=info
 ```
 
 ## API
@@ -117,7 +117,7 @@ Optional:
 
 ## crawl4ai Version Assumption
 
-The adapter in `app/crawler_adapter.py` assumes crawl4ai provides `AsyncWebCrawler` or `WebCrawler`,
+The adapter in `app/services/crawler_adapter.py` assumes crawl4ai provides `AsyncWebCrawler` or `WebCrawler`,
 with one of `arun`/`run`/`crawl`, and returns `links` (either a list or internal/external groups).
 If your version differs, adjust the adapter accordingly.
 
@@ -203,4 +203,3 @@ If your version differs, adjust the adapter accordingly.
 
 - `crawl_jobs`: job status and progress
 - `site_pages`: pages and childrens (internal link array); `url` stores full URL (VARCHAR(1024)) and `url_hash` (SHA-256 hex) is used for equality lookups with `job_id`
-

@@ -5,8 +5,8 @@ import logging
 import os
 from pathlib import Path
 
-from app.bootstrap import ensure_dependencies, ensure_playwright_browsers
-from app.logging_config import configure_logging
+from app.core.bootstrap import ensure_dependencies, ensure_playwright_browsers
+from app.core.logger import configure_logging
 
 ensure_dependencies()
 ensure_playwright_browsers()
@@ -14,7 +14,7 @@ configure_logging()
 
 from fastapi import FastAPI
 
-from app.api import router
+from app.routes.crawl_routes import router
 from app.config import get_settings
 from app.db import init_db
 
@@ -48,7 +48,7 @@ if __name__ == "__main__":
             "-m",
             "celery",
             "-A",
-            "app.tasks",
+            "app.services.crawl_tasks",
             "worker",
             "--loglevel=info",
             f"--concurrency={worker_concurrency}",

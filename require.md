@@ -144,7 +144,7 @@
   * 页面 title（若可取）
   * links（至少要能拿到内链/外链或原始 href 列表）
 * 如果 crawl4ai 返回结构里已有 internal/external 分类，直接用；否则自己用 domain 判断分类。
-* 写一个 `crawler_adapter.py`：封装 crawl4ai 的调用和返回结构，保证主逻辑不依赖具体字段名。
+* 写一个 `app/services/crawler_adapter.py`：封装 crawl4ai 的调用和返回结构，保证主逻辑不依赖具体字段名。
 * 在 README 中写清楚你假设的 crawl4ai 版本/调用方式，以及如何安装。
 
 ### 后台任务调度（必须）
@@ -161,12 +161,14 @@
 请生成一个可运行的项目，建议结构：
 
 * `app/main.py`（FastAPI）
-* `app/api.py`（路由）
+* `app/routes/crawl_routes.py`（路由）
 * `app/models.py`（SQLAlchemy models）
+* `app/schemas.py`（请求/响应模型）
 * `app/db.py`
-* `app/tasks.py`（Celery tasks）
-* `app/crawler_adapter.py`（crawl4ai 封装）
-* `app/crawl_logic.py`（BFS 调度、规范化、过滤）
+* `app/services/crawl_tasks.py`（Celery tasks）
+* `app/services/crawler_adapter.py`（crawl4ai 封装）
+* `app/services/crawl_service.py`（BFS 调度、规范化、过滤）
+* `app/core/logger.py`（日志）
 * `config.example.yaml` 或 `.env.example`
 * `requirements.txt`
 * `docker-compose.yml`（可选：包含 redis + mysql；mysql 密码我会自己改）
@@ -175,7 +177,7 @@
 ### 验收标准（必须满足）
 
 * 启动 API：`uvicorn app.main:app --reload`
-* 启动 worker：`celery -A app.tasks worker --loglevel=info`
+* 启动 worker：`celery -A app.services.crawl_tasks worker --loglevel=info`
 * 调用 `POST /crawl` 返回 job_id 不阻塞
 * `GET /status/{job_id}` 能看到进度递增直到 DONE/FAILED
 * MySQL 中 `site_pages` 表每个 url 行都有 `childrens` JSON 数组
@@ -200,4 +202,3 @@
 但最终输出应包含 Phase 2 的完整实现（异步任务 + status API）。
 
 请开始生成完整代码，确保可运行，并在 README 给出 curl 示例。
-

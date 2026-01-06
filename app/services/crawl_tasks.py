@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from app.bootstrap import ensure_dependencies, ensure_playwright_browsers
-from app.logging_config import configure_logging
+from app.core.bootstrap import ensure_dependencies, ensure_playwright_browsers
+from app.core.logger import configure_logging
 
 ensure_dependencies()
 ensure_playwright_browsers()
@@ -12,8 +12,8 @@ from datetime import datetime
 from celery import Celery
 
 from app.config import get_settings
-from app.crawl_logic import crawl_job
-from app.crawler_adapter import Crawl4AIAdapter
+from app.services.crawl_service import crawl_job
+from app.services.crawler_adapter import Crawl4AIAdapter
 from app.db import SessionLocal
 from app.models import CrawlJob
 

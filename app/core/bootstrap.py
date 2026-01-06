@@ -28,7 +28,7 @@ def ensure_dependencies() -> None:
     if not settings.auto_install_deps:
         return
 
-    root = Path(__file__).resolve().parent.parent
+    root = Path(__file__).resolve().parent.parent.parent
     requirements = root / "requirements.txt"
     if not requirements.exists():
         return
@@ -54,7 +54,7 @@ def ensure_playwright_browsers() -> None:
     if not version:
         return
 
-    root = Path(__file__).resolve().parent.parent
+    root = Path(__file__).resolve().parent.parent.parent
     marker = root / ".playwright_installed"
     if marker.exists() and marker.read_text(encoding="utf-8").strip() == version:
         return

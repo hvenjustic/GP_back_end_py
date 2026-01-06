@@ -6,42 +6,18 @@ from uuid import uuid4
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.crawl_logic import build_crawl_params, hash_url, normalize_url
 from app.db import get_db
 from app.models import CrawlJob, SitePage
-from app.tasks import crawl_job_task
+from app.repositories.crawl_job_repository import add_job, get_job
+from app.repositories.site_page_repository import add_page, list_pages_for_tree
+from app.schemas import CrawlRequest, CrawlResponse, StatusResponse
+from app.services.crawl_service import build_crawl_params, hash_url, normalize_url
+from app.services.crawl_tasks import crawl_job_task
 
 router = APIRouter()
-
-
-class CrawlRequest(BaseModel):
-    root_url: str
-    max_depth: int | None = None
-    max_pages: int | None = None
-    concurrency: int | None = None
-    timeout: int | None = None
-    retries: int | None = None
-    strip_query: bool | None = None
-    strip_tracking_params: bool | None = None
-
-
-class CrawlResponse(BaseModel):
-    job_id: str
-    status_url: str
-
-
-class StatusResponse(BaseModel):
-    job_id: str
-    root_url: str
-    status: str
-    progress: dict[str, Any]
-    timestamps: dict[str, Any]
-    params: dict[str, Any]
-    message: str | None = None
 
 
 def _validate_root_url(root_url: str) -> None:
@@ -79,7 +55,7 @@ def create_crawl(request: CrawlRequest, db: Session = Depends(get_db)) -> CrawlR
         queued_count=1,
         params=params.to_dict(),
     )
-    db.add(job)
+    add_job(db, job)
 
     root_page = SitePage(
         job_id=job_id,
@@ -91,7 +67,7 @@ def create_crawl(request: CrawlRequest, db: Session = Depends(get_db)) -> CrawlR
         crawled=False,
         crawl_status="PENDING",
     )
-    db.add(root_page)
+    add_page(db, root_page)
     db.commit()
 
     crawl_job_task.delay(job_id)
@@ -101,7 +77,7 @@ def create_crawl(request: CrawlRequest, db: Session = Depends(get_db)) -> CrawlR
 
 @router.get("/status/{job_id}", response_model=StatusResponse)
 def get_status(job_id: str, db: Session = Depends(get_db)) -> StatusResponse:
-    job = db.query(CrawlJob).filter_by(job_id=job_id).first()
+    job = get_job(db, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="job not found")
 
@@ -134,7 +110,7 @@ def get_status(job_id: str, db: Session = Depends(get_db)) -> StatusResponse:
 
 @router.post("/cancel/{job_id}")
 def cancel_job(job_id: str, db: Session = Depends(get_db)) -> dict[str, str]:
-    job = db.query(CrawlJob).filter_by(job_id=job_id).first()
+    job = get_job(db, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="job not found")
 
@@ -149,11 +125,7 @@ def cancel_job(job_id: str, db: Session = Depends(get_db)) -> dict[str, str]:
 
 @router.get("/tree/{job_id}")
 def get_tree(job_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
-    pages = (
-        db.query(SitePage.url, SitePage.parent_url, SitePage.depth)
-        .filter_by(job_id=job_id)
-        .all()
-    )
+    pages = list_pages_for_tree(db, job_id)
     if not pages:
         raise HTTPException(status_code=404, detail="job not found or no data")
 
