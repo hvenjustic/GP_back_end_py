@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import (
+    BigInteger,
     JSON,
     Boolean,
     Column,
@@ -75,3 +76,14 @@ class SitePage(Base):
         Index("idx_site_pages_job_depth", "job_id", "depth"),
     )
 
+
+class SiteTask(Base):
+    __tablename__ = "site_tasks"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    url = Column(String(255), nullable=False)
+    graph_json = Column(LONGTEXT)
+    llm_processed_at = Column(DateTime)
+    llm_duration_ms = Column(BigInteger, default=0, nullable=False)
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+    updated_at = Column(DateTime, default=utcnow, nullable=False)

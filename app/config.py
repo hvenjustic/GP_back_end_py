@@ -44,6 +44,12 @@ class Settings:
     auto_install_playwright: bool = True
     worker_concurrency: int = 1
     worker_log_file: str = "worker.log"
+    langextract_site: str = ""
+    langextract_api_key: str = ""
+    langextract_endpoint: str = "/extract"
+    langextract_timeout: int = 60
+    langextract_prompt_path: str = ""
+    langextract_prompt_inline: str = ""
 
 
 def _parse_bool(value: Any, default: bool) -> bool:
@@ -136,6 +142,10 @@ def get_settings() -> Settings:
     data = _load_yaml_config()
     crawl = data.get("crawl", {}) if isinstance(data, dict) else {}
     runtime = data.get("runtime", {}) if isinstance(data, dict) else {}
+    langextract = data.get("langextract", {}) if isinstance(data, dict) else {}
+
+    if not isinstance(langextract, dict):
+        langextract = {}
 
     static_ext_raw = (
         crawl.get("static_extensions") if isinstance(crawl, dict) else None
@@ -161,6 +171,13 @@ def get_settings() -> Settings:
             redis_url = data["redis_url"]
         else:
             redis_url = _build_redis_url(data.get("redis"), redis_url)
+
+    langextract_site = str(langextract.get("site") or "").strip()
+    langextract_api_key = str(langextract.get("api_key") or "").strip()
+    langextract_endpoint = str(langextract.get("endpoint") or "/extract").strip() or "/extract"
+    langextract_timeout = _parse_int(langextract.get("timeout"), 60)
+    langextract_prompt_path = str(langextract.get("prompt_path") or "").strip()
+    langextract_prompt_inline = str(langextract.get("prompt_inline") or "").strip()
 
     return Settings(
         database_url=database_url,
@@ -209,4 +226,10 @@ def get_settings() -> Settings:
             if isinstance(runtime, dict) and runtime.get("worker_log_file")
             else "worker.log"
         ),
+        langextract_site=langextract_site,
+        langextract_api_key=langextract_api_key,
+        langextract_endpoint=langextract_endpoint,
+        langextract_timeout=langextract_timeout,
+        langextract_prompt_path=langextract_prompt_path,
+        langextract_prompt_inline=langextract_prompt_inline,
     )

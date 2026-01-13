@@ -8,16 +8,19 @@ ensure_playwright_browsers()
 configure_logging()
 
 from datetime import datetime
+import logging
 
 from celery import Celery
 
 from app.config import get_settings
 from app.services.crawl_service import crawl_job
 from app.services.crawler_adapter import Crawl4AIAdapter
+from app.services.graph_service import build_graph_for_task
 from app.db import SessionLocal
 from app.models import CrawlJob
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 celery_app = Celery("crawl_tasks", broker=settings.redis_url, backend=settings.redis_url)
 celery_app.conf.update(
@@ -70,3 +73,12 @@ def crawl_job_task(self, job_id: str) -> None:
         raise
     finally:
         db.close()
+
+
+@celery_app.task(name="build_graph_task", bind=True)
+def build_graph_task(self, task_id: int) -> None:
+    try:
+        build_graph_for_task(task_id, SessionLocal, settings)
+    except Exception:  # pylint: disable=broad-except
+        logger.exception("graph build failed task_id=%s", task_id)
+        raise

@@ -29,3 +29,13 @@ class StatusResponse(BaseModel):
     timestamps: dict[str, Any]
     params: dict[str, Any]
     message: str | None = None
+
+
+class GraphBuildRequest(BaseModel):
+    task_id: int
+
+
+class GraphBuildResponse(BaseModel):
+    task_id: int
+    status: str
+    celery_task_id: str | None = None

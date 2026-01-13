@@ -14,7 +14,8 @@ configure_logging()
 
 from fastapi import FastAPI
 
-from app.routes.crawl_routes import router
+from app.routes.crawl_routes import router as crawl_router
+from app.routes.graph_routes import router as graph_router
 from app.config import get_settings
 from app.db import init_db
 
@@ -30,7 +31,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Site Crawl Service", lifespan=lifespan)
 
-app.include_router(router)
+app.include_router(crawl_router)
+app.include_router(graph_router)
 
 if __name__ == "__main__":
     import subprocess
