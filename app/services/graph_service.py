@@ -13,11 +13,10 @@ from app.repositories.crawl_job_repository import get_latest_job_by_root_url
 from app.services.langextract_client import LangExtractClient
 
 logger = logging.getLogger(__name__)
+MAX_LOG_CHARS = 4000
 
 DEFAULT_PROMPT = (
-    "You are an information extraction model. "
-    "Given Markdown that contains a parent page and its children, "
-    "extract entities and relations and return JSON only."
+    "你是信息抽取系统。你的任务是从 Markdown 文本中抽取可用于构建知识图谱的结构化信息。"
 )
 
 
@@ -89,10 +88,18 @@ def build_graph_for_task(task_id: int, session_factory, settings: Settings) -> N
             )
             continue
 
+        serialized = _serialize_annotated_doc(response)
+        logger.info(
+            "langextract response task_id=%s url=%s extractions=%s payload=%s",
+            task_id,
+            current_url,
+            len(serialized.get("extractions", [])),
+            _truncate_json(serialized, MAX_LOG_CHARS),
+        )
         graph_items.append(
             {
                 "url": current_url,
-                "result": _normalize_response(response),
+                "result": serialized,
             }
         )
         _persist_graph_progress(session_factory, task_id, graph_items)
@@ -183,13 +190,40 @@ def _load_graph_json(raw: str | None) -> list[Any]:
     return [data]
 
 
-def _normalize_response(response: Any) -> Any:
-    if isinstance(response, str):
-        try:
-            return json.loads(response)
-        except json.JSONDecodeError:
-            return response
-    return response
+def _serialize_annotated_doc(doc: Any) -> dict[str, Any]:
+    extractions = []
+    for extraction in getattr(doc, "extractions", []) or []:
+        start_pos, end_pos = _safe_char_interval(extraction)
+        extractions.append(
+            {
+                "extraction_class": getattr(extraction, "extraction_class", None),
+                "extraction_text": getattr(extraction, "extraction_text", None),
+                "attributes": getattr(extraction, "attributes", {}) or {},
+                "char_start": start_pos,
+                "char_end": end_pos,
+            }
+        )
+    return {"extractions": extractions}
+
+
+def _truncate_json(payload: Any, limit: int) -> str:
+    try:
+        raw = json.dumps(payload, ensure_ascii=False, default=str)
+    except TypeError:
+        raw = str(payload)
+    if len(raw) <= limit:
+        return raw
+    return f"{raw[:limit]}...(truncated)"
+
+
+def _safe_char_interval(extraction: Any) -> tuple[int | None, int | None]:
+    char_interval = getattr(extraction, "char_interval", None)
+    if char_interval is None:
+        return None, None
+    return (
+        getattr(char_interval, "start_pos", None),
+        getattr(char_interval, "end_pos", None),
+    )
 
 
 def _persist_graph_progress(session_factory, task_id: int, items: list[Any]) -> None:

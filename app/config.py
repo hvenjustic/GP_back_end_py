@@ -44,10 +44,13 @@ class Settings:
     auto_install_playwright: bool = True
     worker_concurrency: int = 1
     worker_log_file: str = "worker.log"
-    langextract_site: str = ""
+    langextract_model_id: str = "gemini-2.5-flash"
     langextract_api_key: str = ""
-    langextract_endpoint: str = "/extract"
-    langextract_timeout: int = 60
+    langextract_openai_api_key: str = ""
+    langextract_openai_base_url: str = ""
+    langextract_extraction_passes: int = 2
+    langextract_max_workers: int = 12
+    langextract_max_char_buffer: int = 1200
     langextract_prompt_path: str = ""
     langextract_prompt_inline: str = ""
 
@@ -172,10 +175,17 @@ def get_settings() -> Settings:
         else:
             redis_url = _build_redis_url(data.get("redis"), redis_url)
 
-    langextract_site = str(langextract.get("site") or "").strip()
-    langextract_api_key = str(langextract.get("api_key") or "").strip()
-    langextract_endpoint = str(langextract.get("endpoint") or "/extract").strip() or "/extract"
-    langextract_timeout = _parse_int(langextract.get("timeout"), 60)
+    langextract_model_id = str(langextract.get("model_id") or "gemini-2.5-flash").strip()
+    if not langextract_model_id:
+        langextract_model_id = "gemini-2.5-flash"
+    langextract_api_key = str(
+        langextract.get("api_key") or langextract.get("langextract_api_key") or ""
+    ).strip()
+    langextract_openai_api_key = str(langextract.get("openai_api_key") or "").strip()
+    langextract_openai_base_url = str(langextract.get("openai_base_url") or "").strip()
+    langextract_extraction_passes = _parse_int(langextract.get("extraction_passes"), 2)
+    langextract_max_workers = _parse_int(langextract.get("max_workers"), 12)
+    langextract_max_char_buffer = _parse_int(langextract.get("max_char_buffer"), 1200)
     langextract_prompt_path = str(langextract.get("prompt_path") or "").strip()
     langextract_prompt_inline = str(langextract.get("prompt_inline") or "").strip()
 
@@ -226,10 +236,13 @@ def get_settings() -> Settings:
             if isinstance(runtime, dict) and runtime.get("worker_log_file")
             else "worker.log"
         ),
-        langextract_site=langextract_site,
+        langextract_model_id=langextract_model_id,
         langextract_api_key=langextract_api_key,
-        langextract_endpoint=langextract_endpoint,
-        langextract_timeout=langextract_timeout,
+        langextract_openai_api_key=langextract_openai_api_key,
+        langextract_openai_base_url=langextract_openai_base_url,
+        langextract_extraction_passes=langextract_extraction_passes,
+        langextract_max_workers=langextract_max_workers,
+        langextract_max_char_buffer=langextract_max_char_buffer,
         langextract_prompt_path=langextract_prompt_path,
         langextract_prompt_inline=langextract_prompt_inline,
     )
