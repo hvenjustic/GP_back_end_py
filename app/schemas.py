@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel
@@ -39,3 +40,27 @@ class GraphBuildResponse(BaseModel):
     task_id: int
     status: str
     celery_task_id: str | None = None
+
+
+class AgentSessionCreateRequest(BaseModel):
+    title: str | None = None
+
+
+class AgentSessionResponse(BaseModel):
+    session_id: str
+    title: str
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class AgentMessageResponse(BaseModel):
+    id: int
+    role: str
+    content: str | None = None
+    status: str | None = None
+    created_at: datetime | None = None
+
+
+class AgentSessionDetailResponse(BaseModel):
+    session: AgentSessionResponse
+    messages: list[AgentMessageResponse]

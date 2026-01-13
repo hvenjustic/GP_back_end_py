@@ -53,6 +53,19 @@ class Settings:
     langextract_max_char_buffer: int = 1200
     langextract_prompt_path: str = ""
     langextract_prompt_inline: str = ""
+    agent_model: str = "gpt-4o-mini"
+    agent_api_key: str = ""
+    agent_base_url: str = ""
+    agent_system_prompt: str = ""
+    agent_max_history: int = 12
+    agent_max_tokens: int = 1024
+    agent_temperature: float = 0.2
+    agent_tools_enabled: list[str] = field(default_factory=list)
+    agent_sql_max_rows: int = 200
+    agent_http_allowlist: list[str] = field(default_factory=list)
+    agent_use_tools: bool = False
+    agent_tool_max_rounds: int = 3
+    cors_allow_origins: list[str] = field(default_factory=list)
 
 
 def _parse_bool(value: Any, default: bool) -> bool:
@@ -146,9 +159,15 @@ def get_settings() -> Settings:
     crawl = data.get("crawl", {}) if isinstance(data, dict) else {}
     runtime = data.get("runtime", {}) if isinstance(data, dict) else {}
     langextract = data.get("langextract", {}) if isinstance(data, dict) else {}
+    agent_cfg = data.get("agent", {}) if isinstance(data, dict) else {}
+    cors_cfg = data.get("cors", {}) if isinstance(data, dict) else {}
 
     if not isinstance(langextract, dict):
         langextract = {}
+    if not isinstance(agent_cfg, dict):
+        agent_cfg = {}
+    if not isinstance(cors_cfg, dict):
+        cors_cfg = {}
 
     static_ext_raw = (
         crawl.get("static_extensions") if isinstance(crawl, dict) else None
@@ -188,6 +207,22 @@ def get_settings() -> Settings:
     langextract_max_char_buffer = _parse_int(langextract.get("max_char_buffer"), 1200)
     langextract_prompt_path = str(langextract.get("prompt_path") or "").strip()
     langextract_prompt_inline = str(langextract.get("prompt_inline") or "").strip()
+
+    agent_model = str(agent_cfg.get("model") or "gpt-4o-mini").strip()
+    if not agent_model:
+        agent_model = "gpt-4o-mini"
+    agent_api_key = str(agent_cfg.get("api_key") or "").strip()
+    agent_base_url = str(agent_cfg.get("base_url") or "").strip()
+    agent_system_prompt = str(agent_cfg.get("system_prompt") or "").strip()
+    agent_max_history = _parse_int(agent_cfg.get("max_history"), 12)
+    agent_max_tokens = _parse_int(agent_cfg.get("max_tokens"), 1024)
+    agent_temperature = _parse_float(agent_cfg.get("temperature"), 0.2)
+    agent_tools_enabled = _parse_list(agent_cfg.get("tools_enabled"))
+    agent_sql_max_rows = _parse_int(agent_cfg.get("sql_max_rows"), 200)
+    agent_http_allowlist = _parse_list(agent_cfg.get("http_allowlist"))
+    agent_use_tools = _parse_bool(agent_cfg.get("use_tools"), False)
+    agent_tool_max_rounds = _parse_int(agent_cfg.get("tool_max_rounds"), 3)
+    cors_allow_origins = _parse_list(cors_cfg.get("allow_origins"))
 
     return Settings(
         database_url=database_url,
@@ -245,4 +280,17 @@ def get_settings() -> Settings:
         langextract_max_char_buffer=langextract_max_char_buffer,
         langextract_prompt_path=langextract_prompt_path,
         langextract_prompt_inline=langextract_prompt_inline,
+        agent_model=agent_model,
+        agent_api_key=agent_api_key,
+        agent_base_url=agent_base_url,
+        agent_system_prompt=agent_system_prompt,
+        agent_max_history=agent_max_history,
+        agent_max_tokens=agent_max_tokens,
+        agent_temperature=agent_temperature,
+        agent_tools_enabled=agent_tools_enabled,
+        agent_sql_max_rows=agent_sql_max_rows,
+        agent_http_allowlist=agent_http_allowlist,
+        agent_use_tools=agent_use_tools,
+        agent_tool_max_rounds=agent_tool_max_rounds,
+        cors_allow_origins=cors_allow_origins,
     )

@@ -13,7 +13,9 @@ ensure_playwright_browsers()
 configure_logging()
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
+from app.routes.agent_routes import router as agent_router
 from app.routes.crawl_routes import router as crawl_router
 from app.routes.graph_routes import router as graph_router
 from app.config import get_settings
@@ -31,8 +33,18 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Site Crawl Service", lifespan=lifespan)
 
+if settings.cors_allow_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_allow_origins,
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
 app.include_router(crawl_router)
 app.include_router(graph_router)
+app.include_router(agent_router)
 
 if __name__ == "__main__":
     import subprocess

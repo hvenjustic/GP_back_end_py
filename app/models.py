@@ -8,6 +8,7 @@ from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
+    ForeignKey,
     Index,
     Integer,
     PrimaryKeyConstraint,
@@ -87,3 +88,31 @@ class SiteTask(Base):
     llm_duration_ms = Column(BigInteger, default=0, nullable=False)
     created_at = Column(DateTime, default=utcnow, nullable=False)
     updated_at = Column(DateTime, default=utcnow, nullable=False)
+
+
+class AgentSession(Base):
+    __tablename__ = "agent_sessions"
+
+    id = Column(String(36), primary_key=True)
+    title = Column(String(255), nullable=False, default="New Chat")
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+    updated_at = Column(DateTime, default=utcnow, nullable=False)
+
+
+class AgentMessage(Base):
+    __tablename__ = "agent_messages"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    session_id = Column(String(36), ForeignKey("agent_sessions.id"), nullable=False)
+    role = Column(String(20), nullable=False)
+    content = Column(LONGTEXT)
+    status = Column(String(20), default="DONE", nullable=False)
+    tool_name = Column(String(120))
+    tool_payload = Column(JSON)
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("idx_agent_messages_session_id", "session_id"),
+        Index("idx_agent_messages_role", "role"),
+        Index("idx_agent_messages_created_at", "created_at"),
+    )

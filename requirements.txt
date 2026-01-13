@@ -8,3 +8,4 @@ python-dotenv==1.0.1
 PyYAML==6.0.1
 crawl4ai
 langextract
+openai==1.109.1
