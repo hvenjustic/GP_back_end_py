@@ -50,7 +50,7 @@ def build_graph_for_task(task_id: int, session_factory, settings: Settings) -> N
     if not start_url:
         raise ValueError("root_url not found in site_pages")
 
-    graph_items = _load_graph_json(task.graph_json)
+    graph_data = _load_graph_json(task.graph_json)
     prompt = _load_prompt(settings)
     client = LangExtractClient(settings)
 
@@ -88,24 +88,25 @@ def build_graph_for_task(task_id: int, session_factory, settings: Settings) -> N
             )
             continue
 
-        serialized = _serialize_annotated_doc(response)
+        entities, relations = _extract_graph_items(response)
+        if entities:
+            graph_data["entities"].extend(entities)
+        if relations:
+            graph_data["relations"].extend(relations)
+
+        payload = {"entities": entities, "relations": relations}
         logger.info(
-            "langextract response task_id=%s url=%s extractions=%s payload=%s",
+            "langextract response task_id=%s url=%s entities=%s relations=%s payload=%s",
             task_id,
             current_url,
-            len(serialized.get("extractions", [])),
-            _truncate_json(serialized, MAX_LOG_CHARS),
+            len(entities),
+            len(relations),
+            _truncate_json(payload, MAX_LOG_CHARS),
         )
-        graph_items.append(
-            {
-                "url": current_url,
-                "result": serialized,
-            }
-        )
-        _persist_graph_progress(session_factory, task_id, graph_items)
+        _persist_graph_progress(session_factory, task_id, graph_data)
 
     duration_ms = int((time.monotonic() - start) * 1000)
-    _finalize_graph(session_factory, task_id, graph_items, duration_ms)
+    _finalize_graph(session_factory, task_id, graph_data, duration_ms)
 
 
 def is_crawl_job_done(status: str | None) -> bool:
@@ -178,32 +179,52 @@ def _parse_children(raw: Any) -> list[str]:
     return []
 
 
-def _load_graph_json(raw: str | None) -> list[Any]:
+def _load_graph_json(raw: str | None) -> dict[str, list[Any]]:
     if not raw or not raw.strip():
-        return []
+        return {"entities": [], "relations": []}
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
-        return []
-    if isinstance(data, list):
-        return data
-    return [data]
+        return {"entities": [], "relations": []}
+    if isinstance(data, dict):
+        entities = data.get("entities")
+        relations = data.get("relations")
+        return {
+            "entities": entities if isinstance(entities, list) else [],
+            "relations": relations if isinstance(relations, list) else [],
+        }
+    return {"entities": [], "relations": []}
 
 
-def _serialize_annotated_doc(doc: Any) -> dict[str, Any]:
-    extractions = []
+def _extract_graph_items(doc: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    entities: list[dict[str, Any]] = []
+    relations: list[dict[str, Any]] = []
     for extraction in getattr(doc, "extractions", []) or []:
-        start_pos, end_pos = _safe_char_interval(extraction)
-        extractions.append(
-            {
-                "extraction_class": getattr(extraction, "extraction_class", None),
-                "extraction_text": getattr(extraction, "extraction_text", None),
-                "attributes": getattr(extraction, "attributes", {}) or {},
-                "char_start": start_pos,
-                "char_end": end_pos,
-            }
-        )
-    return {"extractions": extractions}
+        ex_class = getattr(extraction, "extraction_class", None)
+        attrs = getattr(extraction, "attributes", {}) or {}
+        if ex_class == "entity":
+            name = _string_value(attrs.get("name")) or _string_value(
+                getattr(extraction, "extraction_text", None)
+            )
+            entities.append(
+                {
+                    "name": name,
+                    "type": _string_value(attrs.get("type")),
+                    "description": _string_value(attrs.get("description")),
+                    "extra": attrs.get("extra")
+                    if isinstance(attrs.get("extra"), dict)
+                    else {},
+                }
+            )
+        elif ex_class == "relation":
+            relations.append(
+                {
+                    "source": _string_value(attrs.get("source")),
+                    "target": _string_value(attrs.get("target")),
+                    "type": _string_value(attrs.get("type")),
+                }
+            )
+    return entities, relations
 
 
 def _truncate_json(payload: Any, limit: int) -> str:
@@ -216,17 +237,13 @@ def _truncate_json(payload: Any, limit: int) -> str:
     return f"{raw[:limit]}...(truncated)"
 
 
-def _safe_char_interval(extraction: Any) -> tuple[int | None, int | None]:
-    char_interval = getattr(extraction, "char_interval", None)
-    if char_interval is None:
-        return None, None
-    return (
-        getattr(char_interval, "start_pos", None),
-        getattr(char_interval, "end_pos", None),
-    )
+def _string_value(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
 
 
-def _persist_graph_progress(session_factory, task_id: int, items: list[Any]) -> None:
+def _persist_graph_progress(session_factory, task_id: int, items: dict[str, list[Any]]) -> None:
     db = session_factory()
     task = db.query(SiteTask).filter_by(id=task_id).first()
     if not task:
@@ -239,7 +256,7 @@ def _persist_graph_progress(session_factory, task_id: int, items: list[Any]) -> 
 
 
 def _finalize_graph(
-    session_factory, task_id: int, items: list[Any], duration_ms: int
+    session_factory, task_id: int, items: dict[str, list[Any]], duration_ms: int
 ) -> None:
     db = session_factory()
     task = db.query(SiteTask).filter_by(id=task_id).first()
