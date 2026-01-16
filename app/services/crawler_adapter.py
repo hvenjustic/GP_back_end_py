@@ -50,22 +50,22 @@ class Crawl4AIAdapter:
         if not self._settings:
             return None
         generator_cls = getattr(self._module, "DefaultMarkdownGenerator", None)
-        filter_cls = getattr(self._module, "PruningContentFilter", None)
-        if not generator_cls or not filter_cls:
+        if not generator_cls:
             return None
+        options = {
+            "ignore_links": self._settings.markdown_ignore_links,
+            "ignore_images": self._settings.markdown_ignore_images,
+        }
         try:
-            prune_filter = filter_cls(
-                threshold=self._settings.markdown_filter_threshold,
-                threshold_type=self._settings.markdown_filter_threshold_type,
-                min_word_threshold=self._settings.markdown_filter_min_word_threshold,
-            )
-            return generator_cls(
-                content_filter=prune_filter,
-                options={
-                    "ignore_links": self._settings.markdown_ignore_links,
-                    "ignore_images": self._settings.markdown_ignore_images,
-                },
-            )
+            return generator_cls(content_filter=None, options=options)
+        except TypeError:
+            try:
+                return generator_cls(options=options)
+            except TypeError:
+                try:
+                    return generator_cls()
+                except Exception:
+                    return None
         except Exception:
             return None
 
@@ -158,9 +158,13 @@ class Crawl4AIAdapter:
         fit_markdown = None
         if markdown_obj is not None:
             if isinstance(markdown_obj, dict):
-                fit_markdown = markdown_obj.get("fit_markdown")
+                fit_markdown = markdown_obj.get("raw_markdown") or markdown_obj.get(
+                    "fit_markdown"
+                )
             else:
-                fit_markdown = getattr(markdown_obj, "fit_markdown", None)
+                fit_markdown = getattr(markdown_obj, "raw_markdown", None) or getattr(
+                    markdown_obj, "fit_markdown", None
+                )
 
         success = _get_attr(result, ["success"])
         error_message = _get_attr(result, ["error_message", "error"])

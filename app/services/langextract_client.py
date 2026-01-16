@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 from typing import Any
 
 import langextract as lx
@@ -8,6 +9,7 @@ import langextract as lx
 from app.config import Settings
 
 logger = logging.getLogger(__name__)
+MAX_DEBUG_CHARS = 2000
 
 EXAMPLES = [
     lx.data.ExampleData(
@@ -140,7 +142,7 @@ def _build_extract_kwargs(settings: Settings, prompt: str) -> dict[str, Any]:
         common.update(
             api_key=api_key,
             fence_output=True,
-            use_schema_constraints=False,
+            use_schema_constraints=True,
         )
         base_url = settings.langextract_openai_base_url.strip()
         if base_url:
@@ -157,4 +159,61 @@ class LangExtractClient:
 
     def extract(self, text: str, prompt: str) -> Any:
         kwargs = _build_extract_kwargs(self._settings, prompt)
-        return lx.extract(text_or_documents=text, **kwargs)
+        try:
+            return lx.extract(text_or_documents=text, **kwargs)
+        except Exception as exc:  # pylint: disable=broad-except
+            debug_payload = _extract_debug_payload(exc)
+            if debug_payload:
+                logger.warning("langextract raw response: %s", debug_payload)
+            raise
+
+
+def _extract_debug_payload(exc: Exception) -> str:
+    candidates: list[tuple[str, Any]] = []
+    for name in (
+        "response",
+        "raw_response",
+        "raw_output",
+        "content",
+        "body",
+        "text",
+        "data",
+        "payload",
+    ):
+        value = getattr(exc, name, None)
+        if value is not None:
+            candidates.append((name, value))
+
+    extra = getattr(exc, "__dict__", None)
+    if isinstance(extra, dict):
+        for key, value in extra.items():
+            if key in {name for name, _ in candidates}:
+                continue
+            if value is not None:
+                candidates.append((key, value))
+
+    if not candidates:
+        for arg in getattr(exc, "args", []) or []:
+            if arg:
+                candidates.append(("args", arg))
+
+    for name, value in candidates:
+        rendered = _render_debug_value(value)
+        if rendered:
+            return f"{name}={rendered}"
+    return ""
+
+
+def _render_debug_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        raw = json.dumps(value, ensure_ascii=False, default=str)
+    else:
+        raw = str(value)
+    raw = raw.strip()
+    if not raw:
+        return ""
+    if len(raw) <= MAX_DEBUG_CHARS:
+        return raw
+    return f"{raw[:MAX_DEBUG_CHARS]}...(truncated)"

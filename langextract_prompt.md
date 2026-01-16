@@ -87,30 +87,40 @@ Company -[INCLUDES]-> Patent
 - **RELATED_TO**
 
 --------------------
-# 输出 JSON 模式
+# 输出 JSON 模式（必须包含 `extractions`）
 
-你必须返回一个包含以下字段的 JSON 对象：
+你必须返回一个包含 `extractions` 字段的 JSON 对象，且只输出 JSON，不得包含任何解释或额外文本。
+`extraction_text` 必须是字符串（不得为数组/对象/null）。若无法定位原文片段：
+- 实体：使用 `name` 作为 `extraction_text`
+- 关系：使用 `source` + `type` + `target` 组成的简短字符串
+若无可抽取内容，返回 `{"extractions":[]}`。
 
 ```json
 {
-  "entities": [
+  "extractions": [
     {
-      "name": "字符串，实体的标准名称",
-      "type": "上述列出的某一实体类型",
-      "description": "基于文本的简短描述（1–2 句）",
-      "extra": {
-        "country": "可选，适用于 Company/University",
-        "stage": "可选，适用于 Funding Round 或 Clinical Trial 阶段",
-        "role": "可选，适用于 Scientist/PI/Business Leader",
-        "date": "可选，适用于事件（若已知则用 YYYY-MM-DD 格式）"
+      "extraction_class": "entity",
+      "extraction_text": "实体在原文中的文本片段",
+      "attributes": {
+        "name": "实体标准名称",
+        "type": "上述列出的某一实体类型",
+        "description": "基于文本的简短描述（1–2 句）",
+        "extra": {
+          "country": "可选，适用于 Company/University",
+          "stage": "可选，适用于 Funding Round 或 Clinical Trial 阶段",
+          "role": "可选，适用于 Scientist/PI/Business Leader",
+          "date": "可选，适用于事件（若已知则用 YYYY-MM-DD 格式）"
+        }
       }
-    }
-  ],
-  "relations": [
+    },
     {
-      "source": "源实体名称",
-      "target": "目标实体名称",
-      "type": "上述关系类型之一，或 'RELATED_TO'"
+      "extraction_class": "relation",
+      "extraction_text": "关系在原文中的文本片段",
+      "attributes": {
+        "source": "源实体名称",
+        "target": "目标实体名称",
+        "type": "上述关系类型之一，或 'RELATED_TO'"
+      }
     }
   ]
 }
