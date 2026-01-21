@@ -7,12 +7,9 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends
-from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.db import get_db
 from app.models import CrawlJob, SitePage, SiteTask
 from app.repositories.crawl_job_repository import add_job, get_latest_job_by_root_url
 from app.repositories.site_page_repository import add_page
@@ -43,22 +40,18 @@ from app.schemas import (
 from app.services.crawl_service import build_crawl_params, hash_url, normalize_url
 from app.services.crawl_tasks import build_graph_task, celery_app, crawl_job_task
 from app.services.graph_service import is_crawl_job_done
+from app.services.queue_keys import (
+    CRAWL_ACTIVE_SET_KEY,
+    CRAWL_QUEUE_KEY,
+    GRAPH_ACTIVE_SET_KEY,
+    GRAPH_QUEUE_KEY,
+    PREPROCESS_ACTIVE_SET_KEY,
+    PREPROCESS_QUEUE_KEY,
+)
 from app.services.redis_client import get_redis_client
-
-router = APIRouter(prefix="/api")
-
-CRAWL_QUEUE_KEY = "crawl4ai:queue"
-CRAWL_ACTIVE_SET_KEY = "crawl4ai:active"
-PREPROCESS_QUEUE_KEY = "kg:preprocess:queue"
-PREPROCESS_ACTIVE_SET_KEY = "kg:preprocess:active"
-GRAPH_QUEUE_KEY = "kg:graph:queue"
-GRAPH_ACTIVE_SET_KEY = "kg:graph:active"
+from app.services.service_errors import ServiceError
 
 INVALID_ID_CHARS = re.compile(r"[^a-zA-Z0-9:_-]+")
-
-
-def _json_error(status_code: int, message: str) -> JSONResponse:
-    return JSONResponse(status_code=status_code, content={"error": message, "code": status_code})
 
 
 def _derive_site_name(raw_url: str) -> str:
@@ -105,8 +98,12 @@ def _cleanup_celery_active(rdb, active_key: str) -> None:
 
 
 def _build_crawl_job(
-    db: Session, root_url: str, settings
+    db: Session,
+    root_url: str,
+    task_id: int | None = None,
+    auto_build_graph: bool = False,
 ) -> tuple[str, str] | None:
+    settings = get_settings()
     params = build_crawl_params(settings, CrawlRequest(root_url=root_url))
     normalized_root = normalize_url(root_url, root_url, params)
     if not normalized_root:
@@ -114,6 +111,11 @@ def _build_crawl_job(
 
     job_id = str(uuid4())
     now = datetime.utcnow()
+    job_params = params.to_dict()
+    if task_id:
+        job_params["task_id"] = int(task_id)
+    if auto_build_graph:
+        job_params["auto_build_graph"] = True
 
     job = CrawlJob(
         job_id=job_id,
@@ -123,7 +125,7 @@ def _build_crawl_job(
         updated_at=now,
         discovered_count=1,
         queued_count=1,
-        params=params.to_dict(),
+        params=job_params,
     )
     add_job(db, job)
 
@@ -156,6 +158,21 @@ def _build_crawl_job_meta(job: CrawlJob) -> CrawlJobMeta:
         updated_at=job.updated_at,
         finished_at=job.finished_at,
     )
+
+
+def _find_latest_job(db: Session, root_url: str) -> CrawlJob | None:
+    job = get_latest_job_by_root_url(db, root_url)
+    if job:
+        return job
+    try:
+        settings = get_settings()
+        params = build_crawl_params(settings, CrawlRequest(root_url=root_url))
+        normalized = normalize_url(root_url, root_url, params)
+    except Exception:
+        return None
+    if normalized and normalized != root_url:
+        return get_latest_job_by_root_url(db, normalized)
+    return None
 
 
 def _build_result_item(task: SiteTask, job: CrawlJob | None) -> ResultItem:
@@ -239,7 +256,9 @@ def _parse_geo_location(raw: Any) -> tuple[float, float] | None:
     return None
 
 
-def _build_visual_elements(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _build_visual_elements(
+    payload: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     entities = payload.get("entities") if isinstance(payload, dict) else None
     relations = payload.get("relations") if isinstance(payload, dict) else None
     entities = entities if isinstance(entities, list) else []
@@ -322,12 +341,9 @@ def _build_visual_elements(payload: dict[str, Any]) -> tuple[list[dict[str, Any]
     return nodes, edges
 
 
-@router.post("/tasks", response_model=SubmitTasksResponse)
-def submit_tasks(
-    request: SubmitTasksRequest, db: Session = Depends(get_db)
-) -> SubmitTasksResponse | JSONResponse:
+def submit_tasks(request: SubmitTasksRequest, db: Session) -> SubmitTasksResponse:
     if not request.urls:
-        return _json_error(400, "urls empty")
+        raise ServiceError(status_code=400, message="urls empty")
 
     created = 0
     for item in request.urls:
@@ -346,15 +362,11 @@ def submit_tasks(
     return SubmitTasksResponse(created=created)
 
 
-@router.post("/tasks/crawl", response_model=QueueAckResponse)
-def enqueue_tasks(
-    request: EnqueueTasksRequest, db: Session = Depends(get_db)
-) -> QueueAckResponse | JSONResponse:
+def enqueue_tasks(request: EnqueueTasksRequest, db: Session) -> QueueAckResponse:
     ids = [int(item) for item in request.ids if int(item) > 0]
     if not ids:
-        return _json_error(400, "ids empty")
+        raise ServiceError(status_code=400, message="ids empty")
 
-    settings = get_settings()
     tasks = get_tasks_by_ids(db, ids)
     if not tasks:
         return QueueAckResponse(queued=0, queue_key=CRAWL_QUEUE_KEY, pending=0)
@@ -365,8 +377,18 @@ def enqueue_tasks(
         raw_url = (task.url or "").strip()
         if not raw_url:
             continue
+        now = datetime.utcnow()
+        task.crawl_count = int(task.crawl_count or 0) + 1
+        task.is_crawled = False
+        task.crawled_at = None
+        task.page_count = 0
+        task.graph_json = None
+        task.llm_processed_at = None
+        task.llm_duration_ms = 0
+        task.crawl_duration_ms = 0
+        task.updated_at = now
         try:
-            result = _build_crawl_job(db, raw_url, settings)
+            result = _build_crawl_job(db, raw_url, task_id=int(task.id))
             if result is None:
                 continue
             job_id, _normalized = result
@@ -384,18 +406,14 @@ def enqueue_tasks(
     return QueueAckResponse(queued=queued, queue_key=CRAWL_QUEUE_KEY, pending=pending)
 
 
-@router.get("/tasks/status", response_model=QueueStatusResponse)
-def get_task_status(db: Session = Depends(get_db)) -> QueueStatusResponse | JSONResponse:
+def get_task_status(db: Session) -> QueueStatusResponse:
     rdb = get_redis_client()
     _cleanup_crawl_active(db, rdb)
     pending = _queue_pending(rdb, CRAWL_QUEUE_KEY, CRAWL_ACTIVE_SET_KEY)
     return QueueStatusResponse(pending=pending, queue_key=CRAWL_QUEUE_KEY)
 
 
-@router.get("/graph_locate", response_model=GraphLocateResponse)
-def get_graph_locate(
-    limit: int | None = None, db: Session = Depends(get_db)
-) -> GraphLocateResponse:
+def get_graph_locate(limit: int | None, db: Session) -> GraphLocateResponse:
     tasks = list_geo_locations(db, limit or 0)
     items: list[dict[str, Any]] = []
     for task in tasks:
@@ -407,19 +425,17 @@ def get_graph_locate(
     return GraphLocateResponse(items=items, total=len(items))
 
 
-@router.post("/queues/clear", response_model=ClearQueueResponse)
-def clear_queue(request: ClearQueueRequest) -> ClearQueueResponse | JSONResponse:
+def clear_queue(request: ClearQueueRequest) -> ClearQueueResponse:
     queue_name = (request.queue_name or "").strip()
     if not queue_name:
-        return _json_error(400, "queue_name empty")
+        raise ServiceError(status_code=400, message="queue_name empty")
     rdb = get_redis_client()
     removed = int(rdb.delete(queue_name))
     return ClearQueueResponse(queue_name=queue_name, removed_keys=removed)
 
 
-@router.get("/results", response_model=ListResultsResponse)
 def list_results(
-    page: int = 1, page_size: int = 20, db: Session = Depends(get_db)
+    page: int, page_size: int, db: Session
 ) -> ListResultsResponse:
     if page < 1:
         page = 1
@@ -431,57 +447,48 @@ def list_results(
     tasks, total = list_tasks(db, page, page_size)
     items: list[ResultItem] = []
     for task in tasks:
-        job = get_latest_job_by_root_url(db, task.url)
+        job = _find_latest_job(db, task.url)
         items.append(_build_result_item(task, job))
     return ListResultsResponse(items=items, total=total, page=page, page_size=page_size)
 
 
-@router.get("/results/{task_id}", response_model=ResultDetailResponse)
-def get_result_detail(
-    task_id: int, db: Session = Depends(get_db)
-) -> ResultDetailResponse | JSONResponse:
+def get_result_detail(task_id: int, db: Session) -> ResultDetailResponse:
     if task_id <= 0:
-        return _json_error(400, "id invalid")
+        raise ServiceError(status_code=400, message="id invalid")
     task = get_task_by_id(db, task_id)
     if not task:
-        return _json_error(404, "task not found")
-    job = get_latest_job_by_root_url(db, task.url)
+        raise ServiceError(status_code=404, message="task not found")
+    job = _find_latest_job(db, task.url)
     return ResultDetailResponse(item=_build_result_item(task, job))
 
 
-@router.get("/results/{task_id}/graph_view", response_model=GraphVisualResponse)
-def get_graph_view(
-    task_id: int, db: Session = Depends(get_db)
-) -> GraphVisualResponse | JSONResponse:
+def get_graph_view(task_id: int, db: Session) -> GraphVisualResponse:
     if task_id <= 0:
-        return _json_error(400, "id invalid")
+        raise ServiceError(status_code=400, message="id invalid")
     task = get_task_by_id(db, task_id)
     if not task:
-        return _json_error(404, "task not found")
+        raise ServiceError(status_code=404, message="task not found")
     raw_graph = (task.graph_json or "").strip()
     if not raw_graph:
-        return _json_error(400, "graph_json empty")
+        raise ServiceError(status_code=400, message="graph_json empty")
     try:
         payload = json.loads(raw_graph)
-    except json.JSONDecodeError:
-        return _json_error(400, "graph_json invalid")
+    except json.JSONDecodeError as exc:
+        raise ServiceError(status_code=400, message="graph_json invalid") from exc
 
     nodes, edges = _build_visual_elements(payload)
     return GraphVisualResponse(nodes=nodes, edges=edges)
 
 
-@router.post("/results/graph", response_model=QueueAckResponse)
-def build_graph(
-    request: IDRequest, db: Session = Depends(get_db)
-) -> QueueAckResponse | JSONResponse:
+def build_graph(request: IDRequest, db: Session) -> QueueAckResponse:
     if request.id <= 0:
-        return _json_error(400, "id invalid")
+        raise ServiceError(status_code=400, message="id invalid")
     task = get_task_by_id(db, request.id)
     if not task:
-        return _json_error(404, "task not found")
-    job = get_latest_job_by_root_url(db, task.url)
+        raise ServiceError(status_code=404, message="task not found")
+    job = _find_latest_job(db, task.url)
     if not job or not is_crawl_job_done(job.status):
-        return _json_error(400, "task not finished")
+        raise ServiceError(status_code=400, message="task not finished")
 
     async_result = build_graph_task.delay(request.id)
     rdb = get_redis_client()
@@ -491,7 +498,6 @@ def build_graph(
     return QueueAckResponse(queued=1, queue_key=GRAPH_QUEUE_KEY, pending=pending)
 
 
-@router.get("/results/preprocess/status", response_model=QueueStatusResponse)
 def get_preprocess_status() -> QueueStatusResponse:
     rdb = get_redis_client()
     _cleanup_celery_active(rdb, PREPROCESS_ACTIVE_SET_KEY)
@@ -499,7 +505,6 @@ def get_preprocess_status() -> QueueStatusResponse:
     return QueueStatusResponse(pending=pending, queue_key=PREPROCESS_QUEUE_KEY)
 
 
-@router.get("/results/graph/status", response_model=QueueStatusResponse)
 def get_graph_status() -> QueueStatusResponse:
     rdb = get_redis_client()
     _cleanup_celery_active(rdb, GRAPH_ACTIVE_SET_KEY)

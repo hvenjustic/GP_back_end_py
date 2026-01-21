@@ -10,6 +10,8 @@ from typing import Any, Iterable
 from app.config import Settings
 from app.models import SitePage, SiteTask
 from app.repositories.crawl_job_repository import get_latest_job_by_root_url
+from app.schemas import CrawlRequest
+from app.services.crawl_service import build_crawl_params, normalize_url
 from app.services.langextract_client import LangExtractClient
 
 logger = logging.getLogger(__name__)
@@ -33,6 +35,14 @@ def build_graph_for_task(task_id: int, session_factory, settings: Settings) -> N
         raise ValueError(f"site_task url empty: {task_id}")
 
     job = get_latest_job_by_root_url(db, root_url)
+    if not job:
+        try:
+            params = build_crawl_params(settings, CrawlRequest(root_url=root_url))
+            normalized_root = normalize_url(root_url, root_url, params)
+        except Exception:
+            normalized_root = None
+        if normalized_root and normalized_root != root_url:
+            job = get_latest_job_by_root_url(db, normalized_root)
     if not job:
         db.close()
         raise ValueError(f"crawl_job not found for url: {root_url}")

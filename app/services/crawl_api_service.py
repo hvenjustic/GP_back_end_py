@@ -5,42 +5,41 @@ from typing import Any
 from uuid import uuid4
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.config import get_settings
-from app.db import get_db
+from app.config import Settings
 from app.models import CrawlJob, SitePage
 from app.repositories.crawl_job_repository import add_job, get_job
 from app.repositories.site_page_repository import add_page, list_pages_for_tree
 from app.schemas import CrawlRequest, CrawlResponse, StatusResponse
 from app.services.crawl_service import build_crawl_params, hash_url, normalize_url
 from app.services.crawl_tasks import crawl_job_task
-
-router = APIRouter()
+from app.services.service_errors import ServiceError
 
 
 def _validate_root_url(root_url: str) -> None:
     parsed = urlparse(root_url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise HTTPException(
-            status_code=400, detail="root_url must be http/https and include a hostname"
+        raise ServiceError(
+            status_code=400,
+            message="root_url must be http/https and include a hostname",
         )
 
 
-@router.post("/crawl", response_model=CrawlResponse)
-def create_crawl(request: CrawlRequest, db: Session = Depends(get_db)) -> CrawlResponse:
-    settings = get_settings()
+def create_crawl_job(
+    request: CrawlRequest, db: Session, settings: Settings
+) -> CrawlResponse:
     root_url = request.root_url.strip()
     _validate_root_url(root_url)
 
     try:
         params = build_crawl_params(settings, request)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise ServiceError(status_code=400, message=str(exc)) from exc
+
     normalized_root = normalize_url(root_url, root_url, params)
     if not normalized_root:
-        raise HTTPException(status_code=400, detail="root_url cannot be normalized")
+        raise ServiceError(status_code=400, message="root_url cannot be normalized")
 
     job_id = str(uuid4())
     now = datetime.utcnow()
@@ -75,11 +74,10 @@ def create_crawl(request: CrawlRequest, db: Session = Depends(get_db)) -> CrawlR
     return CrawlResponse(job_id=job_id, status_url=f"/status/{job_id}")
 
 
-@router.get("/status/{job_id}", response_model=StatusResponse)
-def get_status(job_id: str, db: Session = Depends(get_db)) -> StatusResponse:
+def get_status(job_id: str, db: Session) -> StatusResponse:
     job = get_job(db, job_id)
     if not job:
-        raise HTTPException(status_code=404, detail="job not found")
+        raise ServiceError(status_code=404, message="job not found")
 
     progress = {
         "discovered": job.discovered_count,
@@ -94,7 +92,6 @@ def get_status(job_id: str, db: Session = Depends(get_db)) -> StatusResponse:
         "updated_at": job.updated_at,
         "finished_at": job.finished_at,
     }
-
     message = job.error_message if job.status == "FAILED" else None
 
     return StatusResponse(
@@ -108,11 +105,10 @@ def get_status(job_id: str, db: Session = Depends(get_db)) -> StatusResponse:
     )
 
 
-@router.post("/cancel/{job_id}")
-def cancel_job(job_id: str, db: Session = Depends(get_db)) -> dict[str, str]:
+def cancel_job(job_id: str, db: Session) -> dict[str, str]:
     job = get_job(db, job_id)
     if not job:
-        raise HTTPException(status_code=404, detail="job not found")
+        raise ServiceError(status_code=404, message="job not found")
 
     if job.status in {"DONE", "FAILED", "CANCELLED"}:
         return {"job_id": job_id, "status": job.status}
@@ -123,11 +119,10 @@ def cancel_job(job_id: str, db: Session = Depends(get_db)) -> dict[str, str]:
     return {"job_id": job_id, "status": job.status}
 
 
-@router.get("/tree/{job_id}")
-def get_tree(job_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+def get_tree(job_id: str, db: Session) -> dict[str, Any]:
     pages = list_pages_for_tree(db, job_id)
     if not pages:
-        raise HTTPException(status_code=404, detail="job not found or no data")
+        raise ServiceError(status_code=404, message="job not found or no data")
 
     nodes: dict[str, dict[str, Any]] = {}
     roots: list[dict[str, Any]] = []

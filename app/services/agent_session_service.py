@@ -2,12 +2,8 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
-from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from app.config import get_settings
-from app.db import get_db
 from app.models import AgentMessage, AgentSession
 from app.schemas import (
     AgentMessageResponse,
@@ -15,27 +11,11 @@ from app.schemas import (
     AgentSessionDetailResponse,
     AgentSessionResponse,
 )
-from app.services.agent_service import AgentService
-
-router = APIRouter()
+from app.services.service_errors import ServiceError
 
 
-@router.get("/api/chat/agent/stream")
-def stream_agent(
-    message: str = Query(..., min_length=1),
-    session_id: str | None = None,
-) -> StreamingResponse:
-    settings = get_settings()
-    service = AgentService(settings)
-    generator = service.stream_chat(message, session_id=session_id)
-    headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
-    return StreamingResponse(generator, media_type="text/event-stream", headers=headers)
-
-
-@router.post("/api/agent/sessions", response_model=AgentSessionResponse)
 def create_session(
-    payload: AgentSessionCreateRequest | None = Body(default=None),
-    db: Session = Depends(get_db),
+    payload: AgentSessionCreateRequest | None, db: Session
 ) -> AgentSessionResponse:
     title = (payload.title if payload else None) or "New Chat"
     session = AgentSession(id=str(uuid4()), title=title)
@@ -50,11 +30,7 @@ def create_session(
     )
 
 
-@router.get("/api/agent/sessions", response_model=list[AgentSessionResponse])
-def list_sessions(
-    limit: int = Query(20, ge=1, le=200),
-    db: Session = Depends(get_db),
-) -> list[AgentSessionResponse]:
+def list_sessions(limit: int, db: Session) -> list[AgentSessionResponse]:
     sessions = (
         db.query(AgentSession)
         .order_by(AgentSession.updated_at.desc())
@@ -72,14 +48,10 @@ def list_sessions(
     ]
 
 
-@router.get("/api/agent/sessions/{session_id}", response_model=AgentSessionDetailResponse)
-def get_session(
-    session_id: str,
-    db: Session = Depends(get_db),
-) -> AgentSessionDetailResponse:
+def get_session_detail(session_id: str, db: Session) -> AgentSessionDetailResponse:
     session = db.query(AgentSession).filter_by(id=session_id).first()
     if not session:
-        raise HTTPException(status_code=404, detail="session not found")
+        raise ServiceError(status_code=404, message="session not found")
 
     messages = (
         db.query(AgentMessage)

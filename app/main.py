@@ -15,10 +15,7 @@ configure_logging()
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routes.agent_routes import router as agent_router
-from app.routes.api_routes import router as api_router
-from app.routes.crawl_routes import router as crawl_router
-from app.routes.graph_routes import router as graph_router
+from app.routes.routes import router as main_router
 from app.config import get_settings
 from app.db import init_db
 
@@ -43,10 +40,7 @@ if settings.cors_allow_origins:
         allow_headers=["*"],
     )
 
-app.include_router(crawl_router)
-app.include_router(graph_router)
-app.include_router(agent_router)
-app.include_router(api_router)
+app.include_router(main_router)
 
 if __name__ == "__main__":
     import subprocess
