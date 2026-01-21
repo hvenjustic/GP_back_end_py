@@ -117,6 +117,12 @@ api_group.add_api_route(
     response_model=QueueAckResponse,
 )
 api_group.add_api_route(
+    "/results/graph/batch",
+    api.build_graph_batch,
+    methods=["POST"],
+    response_model=QueueAckResponse,
+)
+api_group.add_api_route(
     "/results/preprocess/status",
     api.get_preprocess_status,
     methods=["GET"],

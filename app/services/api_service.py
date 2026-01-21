@@ -27,6 +27,7 @@ from app.schemas import (
     CrawlJobMeta,
     CrawlRequest,
     EnqueueTasksRequest,
+    GraphBatchRequest,
     GraphLocateResponse,
     GraphVisualResponse,
     IDRequest,
@@ -515,6 +516,27 @@ def build_graph(request: IDRequest, db: Session) -> QueueAckResponse:
     _cleanup_celery_active(rdb, GRAPH_ACTIVE_SET_KEY)
     pending = _queue_pending(rdb, GRAPH_QUEUE_KEY, GRAPH_ACTIVE_SET_KEY)
     return QueueAckResponse(queued=1, queue_key=GRAPH_QUEUE_KEY, pending=pending)
+
+
+def build_graph_batch(request: GraphBatchRequest, db: Session) -> QueueAckResponse:
+    ids = [int(item) for item in request.ids if int(item) > 0]
+    if not ids:
+        raise ServiceError(status_code=400, message="ids empty")
+
+    tasks = get_tasks_by_ids(db, ids)
+    rdb = get_redis_client()
+    queued = 0
+    for task in tasks:
+        job = _find_latest_job(db, task.url)
+        if not job or not is_crawl_job_done(job.status):
+            continue
+        async_result = build_graph_task.delay(int(task.id))
+        rdb.sadd(GRAPH_ACTIVE_SET_KEY, async_result.id)
+        queued += 1
+
+    _cleanup_celery_active(rdb, GRAPH_ACTIVE_SET_KEY)
+    pending = _queue_pending(rdb, GRAPH_QUEUE_KEY, GRAPH_ACTIVE_SET_KEY)
+    return QueueAckResponse(queued=queued, queue_key=GRAPH_QUEUE_KEY, pending=pending)
 
 
 def get_preprocess_status() -> QueueStatusResponse:

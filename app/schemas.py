@@ -60,6 +60,10 @@ class EnqueueTasksRequest(BaseModel):
     ids: list[int]
 
 
+class GraphBatchRequest(BaseModel):
+    ids: list[int]
+
+
 class QueueStatusResponse(BaseModel):
     pending: int
     queue_key: str

@@ -9,6 +9,7 @@ from app.schemas import (
     ClearQueueRequest,
     ClearQueueResponse,
     EnqueueTasksRequest,
+    GraphBatchRequest,
     GraphLocateResponse,
     GraphVisualResponse,
     IDRequest,
@@ -100,6 +101,15 @@ def build_graph(
 ) -> QueueAckResponse | JSONResponse:
     try:
         return api_service.build_graph(request, db)
+    except ServiceError as exc:
+        return _json_error(exc.status_code, exc.message)
+
+
+def build_graph_batch(
+    request: GraphBatchRequest, db: Session = Depends(get_db)
+) -> QueueAckResponse | JSONResponse:
+    try:
+        return api_service.build_graph_batch(request, db)
     except ServiceError as exc:
         return _json_error(exc.status_code, exc.message)
 
