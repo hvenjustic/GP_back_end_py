@@ -220,10 +220,13 @@ def _extract_graph_items(doc: Any) -> tuple[list[dict[str, Any]], list[dict[str,
     for extraction in getattr(doc, "extractions", []) or []:
         ex_class = getattr(extraction, "extraction_class", None)
         attrs = getattr(extraction, "attributes", {}) or {}
+        
+        # 获取 extraction_text 并确保它是字符串类型（防御性处理）
+        extraction_text = getattr(extraction, "extraction_text", None)
+        extraction_text_str = _normalize_extraction_text(extraction_text, attrs, ex_class)
+        
         if ex_class == "entity":
-            name = _string_value(attrs.get("name")) or _string_value(
-                getattr(extraction, "extraction_text", None)
-            )
+            name = _string_value(attrs.get("name")) or extraction_text_str
             entities.append(
                 {
                     "name": name,
@@ -259,6 +262,67 @@ def _string_value(value: Any) -> str:
     if value is None:
         return ""
     return str(value).strip()
+
+
+def _normalize_extraction_text(extraction_text: Any, attrs: dict[str, Any], ex_class: str | None) -> str:
+    """
+    将 extraction_text 规范化为字符串类型。
+    这是一个防御性函数，用于处理 LLM 返回错误格式的情况。
+    
+    Args:
+        extraction_text: 原始的 extraction_text 值
+        attrs: extraction 的 attributes 字典
+        ex_class: extraction_class 的值（"entity" 或 "relation"）
+    
+    Returns:
+        规范化后的字符串
+    """
+    # 如果已经是字符串、整数或浮点数，直接转换
+    if isinstance(extraction_text, (str, int, float)):
+        return str(extraction_text).strip()
+    
+    # 如果是字典类型（错误格式），尝试提取有用信息
+    if isinstance(extraction_text, dict):
+        logger.warning(
+            "extraction_text is dict (should be string): %s, attempting to fix",
+            extraction_text
+        )
+        # 尝试从字典中提取文本
+        for key in ("text", "value", "content", "name"):
+            if key in extraction_text and extraction_text[key]:
+                return str(extraction_text[key]).strip()
+        # 如果找不到，转为 JSON 字符串
+        try:
+            return json.dumps(extraction_text, ensure_ascii=False)
+        except Exception:
+            pass
+    
+    # 如果是列表类型（错误格式）
+    if isinstance(extraction_text, list):
+        logger.warning(
+            "extraction_text is list (should be string): %s, attempting to fix",
+            extraction_text
+        )
+        # 取第一个非空元素
+        for item in extraction_text:
+            if item:
+                return str(item).strip()
+    
+    # 如果是 None 或其他类型，根据 extraction_class 生成备用值
+    if ex_class == "entity":
+        name = _string_value(attrs.get("name"))
+        if name:
+            return name
+    elif ex_class == "relation":
+        source = _string_value(attrs.get("source"))
+        relation_type = _string_value(attrs.get("type"))
+        target = _string_value(attrs.get("target"))
+        if source and target:
+            return f"{source} {relation_type} {target}".strip()
+    
+    # 最后的备用方案
+    logger.warning("extraction_text is invalid, using empty string as fallback")
+    return ""
 
 
 def _persist_graph_progress(session_factory, task_id: int, items: dict[str, list[Any]]) -> None:

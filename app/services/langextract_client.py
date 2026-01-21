@@ -143,10 +143,15 @@ def _build_extract_kwargs(settings: Settings, prompt: str) -> dict[str, Any]:
             api_key=api_key,
             fence_output=True,
             use_schema_constraints=True,
+            validate_json=True,  # 启用 JSON 验证
         )
         base_url = settings.langextract_openai_base_url.strip()
         if base_url:
             common["language_model_params"] = {"base_url": base_url}
+        # 为 OpenAI 模型添加响应格式约束
+        if "language_model_params" not in common:
+            common["language_model_params"] = {}
+        common["language_model_params"]["response_format"] = {"type": "json_object"}
         return common
 
     common.update(api_key=settings.langextract_api_key)

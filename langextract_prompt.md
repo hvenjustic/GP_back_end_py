@@ -90,17 +90,25 @@ Company -[INCLUDES]-> Patent
 # 输出 JSON 模式（必须包含 `extractions`）
 
 你必须返回一个包含 `extractions` 字段的 JSON 对象，且只输出 JSON，不得包含任何解释或额外文本。
-`extraction_text` 必须是字符串（不得为数组/对象/null）。若无法定位原文片段：
-- 实体：使用 `name` 作为 `extraction_text`
-- 关系：使用 `source` + `type` + `target` 组成的简短字符串
+
+## ⚠️ 关键要求：extraction_text 必须是字符串
+
+**`extraction_text` 字段必须是字符串类型（string），绝对不能是数组（array）、对象（object）或 null。**
+
+若无法从原文中定位准确的文本片段：
+- **实体**：直接使用 `name` 的值作为 `extraction_text`
+- **关系**：使用 `source + " " + type + " " + target` 组成的简短字符串
+
 若无可抽取内容，返回 `{"extractions":[]}`。
+
+## 正确的输出格式示例：
 
 ```json
 {
   "extractions": [
     {
       "extraction_class": "entity",
-      "extraction_text": "实体在原文中的文本片段",
+      "extraction_text": "实体在原文中的文本片段（必须是字符串）",
       "attributes": {
         "name": "实体标准名称",
         "type": "上述列出的某一实体类型",
@@ -115,7 +123,7 @@ Company -[INCLUDES]-> Patent
     },
     {
       "extraction_class": "relation",
-      "extraction_text": "关系在原文中的文本片段",
+      "extraction_text": "关系在原文中的文本片段（必须是字符串）",
       "attributes": {
         "source": "源实体名称",
         "target": "目标实体名称",
@@ -125,3 +133,29 @@ Company -[INCLUDES]-> Patent
   ]
 }
 ```
+
+## ❌ 错误格式示例（不要这样做）：
+
+```json
+{
+  "extractions": [
+    {
+      "extraction_class": "entity",
+      "extraction_text": {"text": "错误：这是对象，不是字符串"},
+      "attributes": {...}
+    },
+    {
+      "extraction_class": "entity",
+      "extraction_text": ["错误：这是数组，不是字符串"],
+      "attributes": {...}
+    },
+    {
+      "extraction_class": "entity",
+      "extraction_text": null,
+      "attributes": {...}
+    }
+  ]
+}
+```
+
+**再次强调：`extraction_text` 的值必须是简单的字符串，例如 "Acme Bio Inc." 或 "partners with Example University"。**
