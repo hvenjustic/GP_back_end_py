@@ -87,8 +87,16 @@ def build_graph_for_task(task_id: int, session_factory, settings: Settings) -> N
         if not markdown:
             continue
 
+        logger.info(
+            "langextract request task_id=%s parent_url=%s children_urls=%s markdown_len=%d",
+            task_id,
+            current_url,
+            children,
+            len(markdown),
+        )
+
         try:
-            response = client.extract(markdown, prompt)
+            response = client.extract(str(markdown), prompt)
         except Exception as exc:
             logger.warning(
                 "langextract failed task_id=%s url=%s error=%s",
