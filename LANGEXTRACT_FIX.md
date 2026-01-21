@@ -83,8 +83,9 @@ def _normalize_extraction_text(extraction_text: Any, attrs: dict[str, Any], ex_c
 **修改文件**: `app/services/langextract_client.py`
 
 #### 改进点：
-1. **启用 JSON 验证**：`validate_json=True`
-2. **强制 JSON 响应格式**：`response_format={"type": "json_object"}`
+1. **强制 JSON 响应格式**：`response_format={"type": "json_object"}`
+2. **使用模式约束**：`use_schema_constraints=True`
+3. **围栏输出**：`fence_output=True`
 
 这样可以确保 OpenAI 模型返回标准的 JSON 格式。
 

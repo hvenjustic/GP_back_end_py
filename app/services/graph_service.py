@@ -217,24 +217,46 @@ def _load_graph_json(raw: str | None) -> dict[str, list[Any]]:
 def _extract_graph_items(doc: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     entities: list[dict[str, Any]] = []
     relations: list[dict[str, Any]] = []
-    for extraction in getattr(doc, "extractions", []) or []:
+    for idx, extraction in enumerate(getattr(doc, "extractions", []) or []):
         ex_class = getattr(extraction, "extraction_class", None)
         attrs = getattr(extraction, "attributes", {}) or {}
         
-        # 获取 extraction_text 并确保它是字符串类型（防御性处理）
+        # 获取 extraction_text 并记录类型（用于调试）
         extraction_text = getattr(extraction, "extraction_text", None)
+        
+        # 调试日志：记录 extraction_text 的类型
+        if not isinstance(extraction_text, (str, int, float, type(None))):
+            logger.warning(
+                "Unexpected extraction_text type for extraction #%d: type=%s value=%s",
+                idx,
+                type(extraction_text).__name__,
+                extraction_text
+            )
+        
         extraction_text_str = _normalize_extraction_text(extraction_text, attrs, ex_class)
         
         if ex_class == "entity":
             name = _string_value(attrs.get("name")) or extraction_text_str
+            
+            # 提取额外字段（平铺结构）
+            extra = {}
+            for key in ("country", "stage", "role", "date"):
+                value = attrs.get(key)
+                if value and not isinstance(value, dict):  # 只接受简单类型
+                    extra[key] = _string_value(value)
+                elif isinstance(value, dict):
+                    logger.warning(
+                        "Nested dict found in entity attributes key=%s, converting to string",
+                        key
+                    )
+                    extra[key] = json.dumps(value, ensure_ascii=False)
+            
             entities.append(
                 {
                     "name": name,
                     "type": _string_value(attrs.get("type")),
                     "description": _string_value(attrs.get("description")),
-                    "extra": attrs.get("extra")
-                    if isinstance(attrs.get("extra"), dict)
-                    else {},
+                    "extra": extra,
                 }
             )
         elif ex_class == "relation":

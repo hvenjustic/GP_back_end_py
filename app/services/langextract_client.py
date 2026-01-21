@@ -28,7 +28,7 @@ EXAMPLES = [
                     "name": "Acme Bio Inc.",
                     "type": "Company",
                     "description": "A biotech company supplying research reagents.",
-                    "extra": {"country": "USA"},
+                    "country": "USA",  # 平铺：不再使用嵌套的 extra 字典
                 },
             ),
             lx.data.Extraction(
@@ -38,7 +38,7 @@ EXAMPLES = [
                     "name": "Example University",
                     "type": "University",
                     "description": "A university conducting biotechnology research.",
-                    "extra": {"country": "USA"},
+                    "country": "USA",  # 平铺
                 },
             ),
             lx.data.Extraction(
@@ -48,7 +48,6 @@ EXAMPLES = [
                     "name": "fermentation process",
                     "type": "Fermentation Process",
                     "description": "A fermentation process used in biotech research.",
-                    "extra": {},
                 },
             ),
             lx.data.Extraction(
@@ -58,7 +57,6 @@ EXAMPLES = [
                     "name": "ReagentX",
                     "type": "Reagent",
                     "description": "A reagent supplied for laboratory research.",
-                    "extra": {},
                 },
             ),
             lx.data.Extraction(
@@ -68,7 +66,7 @@ EXAMPLES = [
                     "name": "Jane Doe",
                     "type": "Scientist",
                     "description": "A scientist at Example University.",
-                    "extra": {"role": "Scientist"},
+                    "role": "Scientist",  # 平铺
                 },
             ),
             lx.data.Extraction(
@@ -78,7 +76,6 @@ EXAMPLES = [
                     "name": "Fermentation Breakthrough",
                     "type": "Research Paper",
                     "description": "A research paper published by Example University.",
-                    "extra": {},
                 },
             ),
             lx.data.Extraction(
@@ -143,7 +140,6 @@ def _build_extract_kwargs(settings: Settings, prompt: str) -> dict[str, Any]:
             api_key=api_key,
             fence_output=True,
             use_schema_constraints=True,
-            validate_json=True,  # 启用 JSON 验证
         )
         base_url = settings.langextract_openai_base_url.strip()
         if base_url:
@@ -164,12 +160,49 @@ class LangExtractClient:
 
     def extract(self, text: str, prompt: str) -> Any:
         kwargs = _build_extract_kwargs(self._settings, prompt)
+        
+        # 调试：记录提取参数
+        logger.info(
+            "langextract extract params: model_id=%s, extraction_passes=%s, max_workers=%s",
+            kwargs.get("model_id"),
+            kwargs.get("extraction_passes"),
+            kwargs.get("max_workers")
+        )
+        
         try:
-            return lx.extract(text_or_documents=text, **kwargs)
+            result = lx.extract(text_or_documents=text, **kwargs)
+            
+            # 调试：记录提取结果的基本信息
+            extractions = getattr(result, "extractions", []) or []
+            logger.info(
+                "langextract extract success: total_extractions=%d",
+                len(extractions)
+            )
+            
+            # 调试：检查前几个 extraction 的类型
+            for idx, extraction in enumerate(extractions[:3]):
+                extraction_text = getattr(extraction, "extraction_text", None)
+                logger.debug(
+                    "extraction #%d: class=%s, text_type=%s, text_value=%s",
+                    idx,
+                    getattr(extraction, "extraction_class", None),
+                    type(extraction_text).__name__,
+                    str(extraction_text)[:100] if extraction_text else None
+                )
+            
+            return result
+            
         except Exception as exc:  # pylint: disable=broad-except
             debug_payload = _extract_debug_payload(exc)
             if debug_payload:
                 logger.warning("langextract raw response: %s", debug_payload)
+            
+            # 额外调试：记录异常详情
+            logger.error(
+                "langextract extract failed: exception_type=%s, message=%s",
+                type(exc).__name__,
+                str(exc)
+            )
             raise
 
 
