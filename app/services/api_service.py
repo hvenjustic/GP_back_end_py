@@ -18,6 +18,7 @@ from app.repositories.site_task_repository import (
     get_tasks_by_ids,
     list_geo_locations,
     list_tasks,
+    list_tasks_with_graph,
     upsert_task_for_submission,
 )
 from app.schemas import (
@@ -445,6 +446,24 @@ def list_results(
         page_size = 100
 
     tasks, total = list_tasks(db, page, page_size)
+    items: list[ResultItem] = []
+    for task in tasks:
+        job = _find_latest_job(db, task.url)
+        items.append(_build_result_item(task, job))
+    return ListResultsResponse(items=items, total=total, page=page, page_size=page_size)
+
+
+def list_products(
+    page: int, page_size: int, db: Session
+) -> ListResultsResponse:
+    if page < 1:
+        page = 1
+    if page_size < 1:
+        page_size = 20
+    if page_size > 100:
+        page_size = 100
+
+    tasks, total = list_tasks_with_graph(db, page, page_size)
     items: list[ResultItem] = []
     for task in tasks:
         job = _find_latest_job(db, task.url)

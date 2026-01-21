@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models import SiteTask
@@ -57,6 +58,30 @@ def list_tasks(db: Session, page: int, page_size: int) -> tuple[list[SiteTask], 
     items = (
         db.query(SiteTask)
         .order_by(SiteTask.id.desc())
+        .offset(offset)
+        .limit(page_size)
+        .all()
+    )
+    return items, total
+
+
+def list_tasks_with_graph(db: Session, page: int, page_size: int) -> tuple[list[SiteTask], int]:
+    if page < 1:
+        page = 1
+    if page_size < 1:
+        page_size = 20
+    if page_size > 100:
+        page_size = 100
+    offset = (page - 1) * page_size
+
+    base_query = (
+        db.query(SiteTask)
+        .filter(SiteTask.graph_json.isnot(None))
+        .filter(func.length(func.trim(SiteTask.graph_json)) > 0)
+    )
+    total = base_query.count()
+    items = (
+        base_query.order_by(SiteTask.id.desc())
         .offset(offset)
         .limit(page_size)
         .all()

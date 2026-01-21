@@ -93,6 +93,12 @@ api_group.add_api_route(
     response_model=ListResultsResponse,
 )
 api_group.add_api_route(
+    "/products",
+    api.list_products,
+    methods=["GET"],
+    response_model=ListResultsResponse,
+)
+api_group.add_api_route(
     "/results/{task_id}",
     api.get_result_detail,
     methods=["GET"],

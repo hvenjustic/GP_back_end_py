@@ -71,6 +71,12 @@ def list_results(
     return api_service.list_results(page, page_size, db)
 
 
+def list_products(
+    page: int = 1, page_size: int = 20, db: Session = Depends(get_db)
+) -> ListResultsResponse:
+    return api_service.list_products(page, page_size, db)
+
+
 def get_result_detail(
     task_id: int, db: Session = Depends(get_db)
 ) -> ResultDetailResponse | JSONResponse:
