@@ -42,6 +42,129 @@ class GraphBuildResponse(BaseModel):
     celery_task_id: str | None = None
 
 
+class SubmitTaskItem(BaseModel):
+    url: str
+    name: str | None = None
+    site_name: str | None = None
+
+
+class SubmitTasksRequest(BaseModel):
+    urls: list[SubmitTaskItem]
+
+
+class SubmitTasksResponse(BaseModel):
+    created: int
+
+
+class EnqueueTasksRequest(BaseModel):
+    ids: list[int]
+
+
+class QueueStatusResponse(BaseModel):
+    pending: int
+    queue_key: str
+
+
+class ClearQueueRequest(BaseModel):
+    queue_name: str
+
+
+class ClearQueueResponse(BaseModel):
+    queue_name: str
+    removed_keys: int
+
+
+class IDRequest(BaseModel):
+    id: int
+
+
+class QueueAckResponse(BaseModel):
+    queued: int
+    queue_key: str
+    pending: int
+
+
+class CrawlJobMeta(BaseModel):
+    job_id: str
+    status: str
+    discovered_count: int
+    queued_count: int
+    crawled_count: int
+    failed_count: int
+    current_depth: int
+    error_message: str | None = None
+    created_at: datetime | None = None
+    started_at: datetime | None = None
+    updated_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+class ResultItem(BaseModel):
+    id: int
+    name: str | None = None
+    site_name: str | None = None
+    url: str
+    crawled_at: datetime | None = None
+    llm_processed_at: datetime | None = None
+    is_crawled: bool
+    crawl_count: int
+    page_count: int
+    graph_json: str | None = None
+    crawl_duration_ms: int | None = None
+    llm_duration_ms: int | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    crawl_job: CrawlJobMeta | None = None
+
+
+class ListResultsResponse(BaseModel):
+    items: list[ResultItem]
+    total: int
+    page: int
+    page_size: int
+
+
+class ResultDetailResponse(BaseModel):
+    item: ResultItem | None = None
+
+
+class GraphLocateItem(BaseModel):
+    id: int
+    latitude: float
+    longitude: float
+
+
+class GraphLocateResponse(BaseModel):
+    items: list[GraphLocateItem] | None = None
+    total: int | None = None
+
+
+class GraphVisualNode(BaseModel):
+    id: str
+    name: str | None = None
+    type: str | None = None
+    label: str | None = None
+    description: str | None = None
+    extra: dict[str, Any] | None = None
+    raw: dict[str, Any] | None = None
+    meta: dict[str, str] | None = None
+
+
+class GraphVisualEdge(BaseModel):
+    id: str
+    source: str
+    target: str
+    type: str | None = None
+    label: str | None = None
+    raw: dict[str, Any] | None = None
+    meta: dict[str, str] | None = None
+
+
+class GraphVisualResponse(BaseModel):
+    nodes: list[GraphVisualNode]
+    edges: list[GraphVisualEdge]
+
+
 class AgentSessionCreateRequest(BaseModel):
     title: str | None = None
 

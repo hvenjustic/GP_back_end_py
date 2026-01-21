@@ -82,8 +82,16 @@ class SiteTask(Base):
     __tablename__ = "site_tasks"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
+    name = Column(String(100))
+    site_name = Column(String(100))
     url = Column(String(255), nullable=False)
+    geo_location = Column(JSON)
+    crawled_at = Column(DateTime)
+    is_crawled = Column(Boolean, default=False, nullable=False)
+    crawl_count = Column(Integer, default=0, nullable=False)
+    page_count = Column(Integer, default=0, nullable=False)
     graph_json = Column(LONGTEXT)
+    crawl_duration_ms = Column(BigInteger, default=0, nullable=False)
     llm_processed_at = Column(DateTime)
     llm_duration_ms = Column(BigInteger, default=0, nullable=False)
     created_at = Column(DateTime, default=utcnow, nullable=False)
