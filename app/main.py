@@ -45,6 +45,7 @@ app.include_router(main_router)
 if __name__ == "__main__":
     import subprocess
     import sys
+    import signal
 
     import uvicorn
 
@@ -65,17 +66,25 @@ if __name__ == "__main__":
             f"--logfile={log_file}",
         ]
         logger.info("starting worker: %s", " ".join(cmd))
-        return subprocess.Popen(cmd)
+        return subprocess.Popen(cmd, start_new_session=True)
 
     def _stop_worker(proc: subprocess.Popen) -> None:
         if proc.poll() is not None:
             return
         logger.info("stopping worker pid=%s", proc.pid)
-        proc.terminate()
         try:
-            proc.wait(timeout=10)
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        try:
+            proc.wait(timeout=20)
         except subprocess.TimeoutExpired:
-            proc.kill()
+            logger.warning("worker did not exit in time, forcing kill pid=%s", proc.pid)
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                return
+            proc.wait(timeout=5)
 
     worker = _start_worker()
     try:
