@@ -1,30 +1,31 @@
-# Internal URL BFS Crawler Service
+# Python 后端（GP_back_end_py）
 
-FastAPI + Celery + Redis + MySQL service that crawls internal links with BFS using crawl4ai single-page mode.
+## 项目说明
+本项目是知识图谱爬取与抽取服务，基于 FastAPI + Celery + Redis + MySQL，使用 crawl4ai 进行站点 BFS 爬取，并通过 LangExtract/LLM 生成图谱数据。
 
-## Features
+## 当前已实现功能
+- 站点任务录入与入队：`POST /api/tasks`、`POST /api/tasks/crawl`、`GET /api/tasks/status`、`POST /api/queues/clear`
+- 爬虫任务与状态：`POST /crawl`、`GET /status/{job_id}`、`POST /cancel/{job_id}`、`GET /tree/{job_id}`
+- 结果与商品列表：`GET /api/results`、`GET /api/results/{id}`、`GET /api/products`（仅 graph_json 非空）
+- 图谱抽取与可视化：`POST /graph/build`、`POST /api/results/graph`、`POST /api/results/graph/batch`、`GET /api/results/graph/status`、`GET /api/results/{id}/graph_view`
+- 预处理状态：`GET /api/results/preprocess/status`
+- 图谱点位：`GET /api/graph_locate`（读取 site_tasks.geo_location）
+- Agent 对话与历史：`GET /api/chat/agent/stream`（SSE）、`POST/GET /api/agent/sessions`、`GET /api/agent/sessions/{id}`
+- 数据落库：`crawl_jobs`、`site_pages`、`site_tasks`、`agent_sessions`、`agent_messages`
 
-- `POST /crawl` returns `job_id` immediately (async crawl)
-- `GET /status/{job_id}` for progress
-- Results stored in MySQL (`crawl_jobs` / `site_pages`)
+## 技术栈
+- FastAPI、SQLAlchemy、Celery、Redis、MySQL
+- crawl4ai（爬虫适配）、LangExtract/LLM（图谱抽取）
 
-## Requirements
-
-- Python 3.11
-- MySQL 8.0
-- Redis
-
-## Install
-
+## 安装
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Configuration
-
-Use `config.yaml` in the project root:
+## 配置
+使用 `config.yaml`：
 
 ```yaml
 mysql:
@@ -39,161 +40,48 @@ redis:
     - "host:port"
   dbPassWord: "password"
   dbRedisDb: 0
-```
 
-Notes:
-
-- the first address in the list is used
-- Redis db index defaults to 0 if omitted
-
-Markdown filter (controls `fit_markdown` generation):
-
-```yaml
 crawl:
-  markdown_filter:
-    threshold: 0.22
-    threshold_type: "dynamic"
-    min_word_threshold: 0
-    ignore_links: true
-    ignore_images: true
+  max_depth: 4
+  max_pages: 500
+  concurrency: 5
+  timeout: 20
+  retries: 2
+  strip_query: false
+  strip_tracking_params: true
+
+runtime:
+  worker_concurrency: 1
+  worker_log_file: "worker.log"
+
+langextract:
+  model_id: "gpt-4o-mini"
+  openai_api_key: "YOUR_KEY"
+  openai_base_url: "https://example.com/v1"
+  prompt_path: "langextract_prompt.md"
+
+agent:
+  model: "gpt-4o-mini"
+  api_key: "YOUR_KEY"
+  base_url: "https://example.com/v1"
+  use_tools: true
+  tools_enabled:
+    - "crawl_site"
+    - "build_graph"
 ```
 
-## Run
+## 启动
+开发模式（自动拉起 worker）：
+```bash
+python app/main.py
+```
 
-The worker is started automatically when running `python app/main.py`.
-Worker concurrency and log file are configured in `config.yaml` under `runtime`.
-
-Startup will auto-install dependencies and Playwright browsers unless disabled in `config.yaml` runtime section.
-
-Start API:
-
+或分别启动：
 ```bash
 uvicorn app.main:app --reload
+celery -A app.services.crawl_tasks worker --loglevel=info --concurrency=1
 ```
 
-Start worker:
-
-```bash
-celery -A app.services.crawl_tasks worker --loglevel=info
-```
-
-## API
-
-`POST /crawl`
-
-- request: `{"root_url":"https://example.com/","max_depth":3,"max_pages":5000,"concurrency":5}`
-- response: `{"job_id":"uuid","status_url":"/status/uuid"}`
-
-`GET /status/{job_id}`
-
-- returns `progress` (discovered/queued/crawled/failed/current_depth) and `params`
-
-Optional:
-
-- `POST /cancel/{job_id}` cancel a job
-- `GET /tree/{job_id}` return a simplified tree (parent_url relations)
-
-## Progress Fields
-
-- `discovered`: unique URLs discovered
-- `queued`: pending count (`discovered - crawled - failed`)
-- `crawled`: successful pages
-- `failed`: failed pages
-- `current_depth`: current BFS depth
-
-## Crawl Strategy
-
-- BFS by depth (root is depth 0)
-- only internal links (same netloc or `allowed_domains`)
-- `childrens` stores internal links only (normalized absolute URLs)
-- fragments removed; query/tracking params optional
-- static extensions filtered (configurable)
-
-## crawl4ai Version Assumption
-
-The adapter in `app/services/crawler_adapter.py` assumes crawl4ai provides `AsyncWebCrawler` or `WebCrawler`,
-with one of `arun`/`run`/`crawl`, and returns `links` (either a list or internal/external groups).
-If your version differs, adjust the adapter accordingly.
-
-## crawl4ai 0.7.x CrawlResult JSON
-
-```json
-{
-  "url": "https://example.com",
-  "html": "<html>...</html>",
-  "fit_html": "<html>...</html>",
-  "success": true,
-  "cleaned_html": "<html>...</html>",
-  "media": {
-    "images": [
-      {
-        "src": "https://example.com/logo.png",
-        "data": "",
-        "alt": "logo",
-        "desc": "",
-        "score": 0,
-        "type": "image",
-        "group_id": 0,
-        "format": "png",
-        "width": 256
-      }
-    ],
-    "videos": [],
-    "audios": [],
-    "tables": []
-  },
-  "links": {
-    "internal": [
-      {
-        "href": "https://example.com/about",
-        "text": "About",
-        "title": "",
-        "base_domain": "example.com",
-        "head_data": null,
-        "head_extraction_status": null,
-        "head_extraction_error": null,
-        "intrinsic_score": null,
-        "contextual_score": null,
-        "total_score": null
-      }
-    ],
-    "external": []
-  },
-  "downloaded_files": [],
-  "js_execution_result": {},
-  "screenshot": null,
-  "pdf": null,
-  "mhtml": null,
-  "markdown": {
-    "raw_markdown": "# Title",
-    "markdown_with_citations": "# Title",
-    "references_markdown": "",
-    "fit_markdown": null,
-    "fit_html": null
-  },
-  "extracted_content": null,
-  "metadata": {},
-  "error_message": "",
-  "session_id": null,
-  "response_headers": {},
-  "status_code": 200,
-  "ssl_certificate": null,
-  "dispatch_result": null,
-  "redirected_url": "https://example.com",
-  "network_requests": [],
-  "console_messages": [],
-  "tables": [
-    {
-      "headers": ["H1", "H2"],
-      "rows": [["A1", "A2"]],
-      "caption": "",
-      "summary": ""
-    }
-  ]
-}
-```
-
-## Tables
-
-- `crawl_jobs`: job status and progress
-- `site_pages`: pages and childrens (internal link array); `url` stores full URL (VARCHAR(1024)) and `url_hash` (SHA-256 hex) is used for equality lookups with `job_id`
+## 开发注意
+- 启动时会自动安装依赖与 Playwright 浏览器（可在 `config.yaml` 的 `runtime` 中关闭）。
+- 使用 `python app/main.py` 退出时会强杀 worker 并清空 Redis（仅用于开发调试）。
