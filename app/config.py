@@ -26,6 +26,7 @@ DEFAULT_STATIC_EXTENSIONS = [
 class Settings:
     database_url: str
     redis_url: str
+    database_connect_timeout: int = 5
     neo4j_uri: str = ""
     neo4j_user: str = ""
     neo4j_password: str = ""
@@ -235,10 +236,15 @@ def get_settings() -> Settings:
     agent_use_tools = _parse_bool(agent_cfg.get("use_tools"), False)
     agent_tool_max_rounds = _parse_int(agent_cfg.get("tool_max_rounds"), 3)
     cors_allow_origins = _parse_list(cors_cfg.get("allow_origins"))
+    database_connect_timeout = _parse_int(
+        runtime.get("database_connect_timeout") if isinstance(runtime, dict) else None,
+        5,
+    )
 
     return Settings(
         database_url=database_url,
         redis_url=redis_url,
+        database_connect_timeout=database_connect_timeout,
         neo4j_uri=neo4j_uri,
         neo4j_user=neo4j_user,
         neo4j_password=neo4j_password,
