@@ -6,3 +6,4 @@ PREPROCESS_ACTIVE_SET_KEY = "kg:preprocess:active"
 
 GRAPH_QUEUE_KEY = "kg:graph:queue"
 GRAPH_ACTIVE_SET_KEY = "kg:graph:active"
+GRAPH_TASK_MAP_KEY = "kg:graph:task_map"

@@ -20,7 +20,12 @@ from app.repositories.site_task_repository import upsert_task_for_submission
 from app.schemas import CrawlRequest
 from app.services.crawl_service import build_crawl_params, hash_url, normalize_url
 from app.services.crawl_tasks import build_graph_task, crawl_job_task
-from app.services.queue_keys import CRAWL_ACTIVE_SET_KEY, GRAPH_ACTIVE_SET_KEY
+from app.services.queue_keys import (
+    CRAWL_ACTIVE_SET_KEY,
+    GRAPH_ACTIVE_SET_KEY,
+    GRAPH_QUEUE_KEY,
+    GRAPH_TASK_MAP_KEY,
+)
 from app.services.redis_client import get_redis_client
 
 
@@ -266,6 +271,7 @@ def build_default_registry(settings: Settings) -> ToolRegistry:
         async_result = build_graph_task.delay(task_id)
         rdb = get_redis_client()
         rdb.sadd(GRAPH_ACTIVE_SET_KEY, async_result.id)
+        rdb.hset(GRAPH_TASK_MAP_KEY, async_result.id, int(task_id))
         return json.dumps(
             {"status": "queued", "task_id": task_id, "celery_task_id": async_result.id},
             ensure_ascii=False,
@@ -386,18 +392,9 @@ def build_default_registry(settings: Settings) -> ToolRegistry:
         db = SessionLocal()
         try:
             total_tasks = db.query(SiteTask).count()
-            completed_count = (
-                db.query(SiteTask).filter(SiteTask.llm_processed_at.isnot(None)).count()
-            )
+            completed_count = db.query(SiteTask).filter(SiteTask.llm_processed_at.isnot(None)).count()
 
             graph_has_data = func.length(func.trim(SiteTask.graph_json)) > 0
-            in_queue_count = (
-                db.query(SiteTask)
-                .filter(SiteTask.llm_processed_at.is_(None))
-                .filter(SiteTask.graph_json.isnot(None))
-                .filter(graph_has_data)
-                .count()
-            )
             buildable_count = (
                 db.query(SiteTask)
                 .filter(SiteTask.is_crawled.is_(True))
@@ -410,18 +407,154 @@ def build_default_registry(settings: Settings) -> ToolRegistry:
                 )
                 .count()
             )
-            not_buildable_count = (
-                db.query(SiteTask).filter(SiteTask.is_crawled.is_(False)).count()
+            repeatable_count = (
+                db.query(SiteTask)
+                .filter(SiteTask.is_crawled.is_(True))
+                .filter(SiteTask.llm_processed_at.isnot(None))
+                .filter(SiteTask.graph_json.isnot(None))
+                .filter(graph_has_data)
+                .count()
             )
+            not_buildable_count = db.query(SiteTask).filter(SiteTask.is_crawled.is_(False)).count()
+
+            rdb = get_redis_client()
+            queue_count = int(rdb.llen(GRAPH_QUEUE_KEY) + rdb.scard(GRAPH_ACTIVE_SET_KEY))
 
             payload = {
-                "queue": {"count": in_queue_count},
+                "queue": {"count": queue_count},
                 "completed": completed_count,
                 "buildable": buildable_count,
+                "repeatable": repeatable_count,
                 "not_buildable": not_buildable_count,
                 "total_tasks": total_tasks,
             }
             return json.dumps(payload, ensure_ascii=False, default=str)
+        finally:
+            db.close()
+
+    def graph_tasks_list(category: str = "buildable", limit: int = 20) -> str:
+        cat = (category or "").strip().lower()
+        limit = max(1, min(int(limit or 20), 200))
+        db = SessionLocal()
+        try:
+            graph_has_data = func.length(func.trim(SiteTask.graph_json)) > 0
+            query = db.query(SiteTask)
+            if cat in {"buildable", "ready"}:
+                query = (
+                    query.filter(SiteTask.is_crawled.is_(True))
+                    .filter(SiteTask.llm_processed_at.is_(None))
+                    .filter(
+                        or_(
+                            SiteTask.graph_json.is_(None),
+                            func.length(func.trim(SiteTask.graph_json)) == 0,
+                        )
+                    )
+                )
+            elif cat in {"repeatable", "rebuild"}:
+                query = (
+                    query.filter(SiteTask.is_crawled.is_(True))
+                    .filter(SiteTask.llm_processed_at.isnot(None))
+                    .filter(SiteTask.graph_json.isnot(None))
+                    .filter(graph_has_data)
+                )
+            elif cat in {"completed", "done"}:
+                query = query.filter(SiteTask.llm_processed_at.isnot(None))
+            elif cat in {"not_buildable", "blocked"}:
+                query = query.filter(SiteTask.is_crawled.is_(False))
+            elif cat in {"queued", "queue"}:
+                rdb = get_redis_client()
+                queue_ids = rdb.lrange(GRAPH_QUEUE_KEY, 0, max(0, limit - 1))
+                active_ids = list(rdb.smembers(GRAPH_ACTIVE_SET_KEY))
+                celery_ids = [str(item) for item in queue_ids + active_ids if item]
+                if not celery_ids:
+                    return json.dumps(
+                        {"status": "ok", "category": "queued", "count": 0, "items": []},
+                        ensure_ascii=False,
+                    )
+                mapped = rdb.hmget(GRAPH_TASK_MAP_KEY, celery_ids)
+                task_ids = [int(item) for item in mapped if item and str(item).isdigit()]
+                if not task_ids:
+                    return json.dumps(
+                        {
+                            "status": "ok",
+                            "category": "queued",
+                            "count": 0,
+                            "items": [],
+                            "note": "queue ids found but no task mapping",
+                        },
+                        ensure_ascii=False,
+                    )
+                query = query.filter(SiteTask.id.in_(task_ids))
+            else:
+                return json.dumps(
+                    {"status": "error", "error": "category invalid"},
+                    ensure_ascii=False,
+                )
+
+            if cat in {"queued", "queue"}:
+                tasks = query.all()
+            else:
+                tasks = query.order_by(SiteTask.id.desc()).limit(limit).all()
+            items: list[dict[str, Any]] = []
+            for task in tasks:
+                items.append(
+                    {
+                        "id": int(task.id),
+                        "name": task.name,
+                        "site_name": task.site_name,
+                        "url": task.url,
+                        "is_crawled": bool(task.is_crawled),
+                        "llm_processed_at": task.llm_processed_at,
+                        "updated_at": task.updated_at,
+                    }
+                )
+            return json.dumps(
+                {"status": "ok", "category": cat, "count": len(items), "items": items},
+                ensure_ascii=False,
+                default=str,
+            )
+        finally:
+            db.close()
+
+    def build_graph_batch(task_ids: list[int] | None = None) -> str:
+        ids = [int(item) for item in (task_ids or []) if int(item) > 0]
+        if not ids:
+            return json.dumps({"status": "error", "error": "task_ids empty"}, ensure_ascii=False)
+
+        db = SessionLocal()
+        try:
+            tasks = db.query(SiteTask).filter(SiteTask.id.in_(ids)).all()
+            if not tasks:
+                return json.dumps({"status": "error", "error": "tasks not found"}, ensure_ascii=False)
+
+            queued = 0
+            queued_ids: list[int] = []
+            rdb = get_redis_client()
+            for task in tasks:
+                job = get_latest_job_by_root_url(db, task.url)
+                if not job:
+                    params = build_crawl_params(settings, CrawlRequest(root_url=task.url))
+                    normalized = normalize_url(task.url, task.url, params)
+                    if normalized and normalized != task.url:
+                        job = get_latest_job_by_root_url(db, normalized)
+                if not job or not job.status or job.status.strip().lower() not in {
+                    "done",
+                    "completed",
+                    "success",
+                    "succeeded",
+                    "finished",
+                }:
+                    continue
+                async_result = build_graph_task.delay(int(task.id))
+                rdb.sadd(GRAPH_ACTIVE_SET_KEY, async_result.id)
+                rdb.hset(GRAPH_TASK_MAP_KEY, async_result.id, int(task.id))
+                queued += 1
+                queued_ids.append(int(task.id))
+
+            return json.dumps(
+                {"status": "queued", "queued": queued, "task_ids": queued_ids},
+                ensure_ascii=False,
+            )
         finally:
             db.close()
 
@@ -600,6 +733,48 @@ def build_default_registry(settings: Settings) -> ToolRegistry:
             description="Get knowledge graph build progress summary.",
             parameters={"type": "object", "properties": {}},
             handler=graph_status,
+        )
+    )
+
+    registry.register(
+        ToolDefinition(
+            name="graph_tasks_list",
+            description="List tasks by graph build category.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "description": "buildable|repeatable|completed|not_buildable|queued",
+                        "default": "buildable",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max tasks to return (default 20).",
+                        "default": 20,
+                    },
+                },
+            },
+            handler=graph_tasks_list,
+        )
+    )
+
+    registry.register(
+        ToolDefinition(
+            name="build_graph_batch",
+            description="Trigger knowledge graph extraction for multiple tasks.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "task_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Site task ids.",
+                    }
+                },
+                "required": ["task_ids"],
+            },
+            handler=build_graph_batch,
         )
     )
 

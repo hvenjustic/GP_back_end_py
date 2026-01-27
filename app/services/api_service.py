@@ -53,6 +53,7 @@ from app.services.queue_keys import (
     CRAWL_QUEUE_KEY,
     GRAPH_ACTIVE_SET_KEY,
     GRAPH_QUEUE_KEY,
+    GRAPH_TASK_MAP_KEY,
     PREPROCESS_ACTIVE_SET_KEY,
     PREPROCESS_QUEUE_KEY,
 )
@@ -547,6 +548,7 @@ def build_graph(request: IDRequest, db: Session) -> QueueAckResponse:
     async_result = build_graph_task.delay(request.id)
     rdb = get_redis_client()
     rdb.sadd(GRAPH_ACTIVE_SET_KEY, async_result.id)
+    rdb.hset(GRAPH_TASK_MAP_KEY, async_result.id, int(request.id))
     _cleanup_celery_active(rdb, GRAPH_ACTIVE_SET_KEY)
     pending = _queue_pending(rdb, GRAPH_QUEUE_KEY, GRAPH_ACTIVE_SET_KEY)
     return QueueAckResponse(queued=1, queue_key=GRAPH_QUEUE_KEY, pending=pending)
@@ -566,6 +568,7 @@ def build_graph_batch(request: GraphBatchRequest, db: Session) -> QueueAckRespon
             continue
         async_result = build_graph_task.delay(int(task.id))
         rdb.sadd(GRAPH_ACTIVE_SET_KEY, async_result.id)
+        rdb.hset(GRAPH_TASK_MAP_KEY, async_result.id, int(task.id))
         queued += 1
 
     _cleanup_celery_active(rdb, GRAPH_ACTIVE_SET_KEY)

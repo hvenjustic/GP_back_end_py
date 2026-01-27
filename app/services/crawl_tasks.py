@@ -19,7 +19,7 @@ from app.services.crawler_adapter import Crawl4AIAdapter
 from app.services.graph_service import build_graph_for_task
 from app.db import SessionLocal
 from app.models import CrawlJob, SiteTask
-from app.services.queue_keys import GRAPH_ACTIVE_SET_KEY
+from app.services.queue_keys import GRAPH_ACTIVE_SET_KEY, GRAPH_TASK_MAP_KEY
 from app.services.redis_client import get_redis_client
 
 settings = get_settings()
@@ -112,6 +112,7 @@ def crawl_job_task(self, job_id: str) -> None:
             async_result = build_graph_task.delay(task_id)
             rdb = get_redis_client()
             rdb.sadd(GRAPH_ACTIVE_SET_KEY, async_result.id)
+            rdb.hset(GRAPH_TASK_MAP_KEY, async_result.id, int(task_id))
     except Exception as exc:  # pylint: disable=broad-except
         db.rollback()
         job = db.query(CrawlJob).filter_by(job_id=job_id).first()

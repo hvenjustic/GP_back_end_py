@@ -19,6 +19,36 @@ from app.services.agent_tools import ToolRegistry, build_default_registry
 logger = logging.getLogger(__name__)
 
 
+def _patch_langchain_usage_metadata() -> None:
+    try:
+        from langchain_core.messages import ai as ai_messages
+    except Exception:
+        return
+    if getattr(ai_messages, "_patched_usage_metadata", False):
+        return
+
+    original = ai_messages.add_ai_message_chunks
+
+    def _normalize(meta: Any) -> None:
+        if not meta:
+            return
+        for key in ("input_tokens", "output_tokens", "total_tokens"):
+            if meta.get(key) is None:
+                meta[key] = 0
+
+    def safe_add(left: Any, *others: Any):
+        _normalize(getattr(left, "usage_metadata", None))
+        for other in others:
+            _normalize(getattr(other, "usage_metadata", None))
+        return original(left, *others)
+
+    ai_messages.add_ai_message_chunks = safe_add
+    ai_messages._patched_usage_metadata = True
+
+
+_patch_langchain_usage_metadata()
+
+
 class AgentService:
     def __init__(self, settings: Settings, registry: ToolRegistry | None = None) -> None:
         self.settings = settings
