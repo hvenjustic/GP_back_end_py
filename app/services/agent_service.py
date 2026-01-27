@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime
+import inspect
 import json
 import logging
 from typing import Any, Iterator
 from uuid import uuid4
 
-from openai import OpenAI
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from sqlalchemy.orm import Session
 
 from app.config import Settings
@@ -20,7 +22,8 @@ logger = logging.getLogger(__name__)
 class AgentService:
     def __init__(self, settings: Settings, registry: ToolRegistry | None = None) -> None:
         self.settings = settings
-        self._client: OpenAI | None = None
+        self._llm: ChatOpenAI | None = None
+        self._stream_llm: ChatOpenAI | None = None
         self._registry = registry or build_default_registry(settings)
 
     def stream_chat(self, message: str, session_id: str | None = None) -> Iterator[str]:
@@ -30,7 +33,7 @@ class AgentService:
             session: AgentSession | None = None
             try:
                 session = self._get_or_create_session(db, session_id, message)
-                user_message = self._add_message(db, session.id, "user", message)
+                self._add_message(db, session.id, "user", message)
                 db.commit()
 
                 messages = self._build_messages(db, session.id)
@@ -46,22 +49,12 @@ class AgentService:
                 )
 
                 content_parts: list[str] = []
-                client = self._get_client()
 
-                prepared_messages = self._prepare_messages_for_stream(client, messages)
-
-                stream = client.chat.completions.create(
-                    model=self.settings.agent_model,
-                    messages=prepared_messages,
-                    temperature=self.settings.agent_temperature,
-                    max_tokens=self.settings.agent_max_tokens,
-                    stream=True,
-                )
+                prepared_messages = self._prepare_messages_for_stream(messages)
+                stream = self._get_llm(streaming=True).stream(prepared_messages)
 
                 for chunk in stream:
-                    if not chunk.choices:
-                        continue
-                    delta = chunk.choices[0].delta.content or ""
+                    delta = _chunk_to_text(chunk)
                     if not delta:
                         continue
                     content_parts.append(delta)
@@ -116,15 +109,14 @@ class AgentService:
 
         return generator()
 
-    def _get_client(self) -> OpenAI:
-        if self._client is None:
-            if not self.settings.agent_api_key:
-                raise ValueError("agent api_key is not configured")
-            client_kwargs: dict[str, Any] = {"api_key": self.settings.agent_api_key}
-            if self.settings.agent_base_url:
-                client_kwargs["base_url"] = self.settings.agent_base_url
-            self._client = OpenAI(**client_kwargs)
-        return self._client
+    def _get_llm(self, streaming: bool = False) -> ChatOpenAI:
+        if streaming:
+            if self._stream_llm is None:
+                self._stream_llm = _build_chat_llm(self.settings, streaming=True)
+            return self._stream_llm
+        if self._llm is None:
+            self._llm = _build_chat_llm(self.settings, streaming=False)
+        return self._llm
 
     def _get_or_create_session(
         self, db: Session, session_id: str | None, message: str
@@ -161,7 +153,7 @@ class AgentService:
         db.add(message)
         return message
 
-    def _build_messages(self, db: Session, session_id: str) -> list[dict[str, Any]]:
+    def _build_messages(self, db: Session, session_id: str) -> list[BaseMessage]:
         query = (
             db.query(AgentMessage)
             .filter_by(session_id=session_id)
@@ -170,81 +162,160 @@ class AgentService:
         )
         items = list(reversed(query.all()))
 
-        messages: list[dict[str, Any]] = []
+        messages: list[BaseMessage] = []
         if self.settings.agent_system_prompt:
-            messages.append({"role": "system", "content": self.settings.agent_system_prompt})
+            messages.append(SystemMessage(content=self.settings.agent_system_prompt))
 
         for item in items:
-            if item.role not in {"user", "assistant"}:
-                continue
-            messages.append({"role": item.role, "content": item.content or ""})
+            content = item.content or ""
+            if item.role == "user":
+                messages.append(HumanMessage(content=content))
+            elif item.role == "assistant":
+                messages.append(AIMessage(content=content))
         return messages
 
-    def _prepare_messages_for_stream(
-        self, client: OpenAI, messages: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
+    def _prepare_messages_for_stream(self, messages: list[BaseMessage]) -> list[BaseMessage]:
         enabled = {name.strip() for name in self.settings.agent_tools_enabled if name.strip()}
         if not (self.settings.agent_use_tools and enabled):
             return messages
 
-        tools = self._registry.to_openai_tools(enabled)
+        tools = self._registry.to_langchain_tools(enabled)
+        if not tools:
+            return messages
+
+        llm = self._get_llm(streaming=False)
+        llm_with_tools = llm.bind_tools(tools)
         tool_rounds = 0
         working = list(messages)
 
         while tool_rounds < self.settings.agent_tool_max_rounds:
-            response = client.chat.completions.create(
-                model=self.settings.agent_model,
-                messages=working,
-                tools=tools,
-                temperature=self.settings.agent_temperature,
-                max_tokens=self.settings.agent_max_tokens,
-            )
-            choice = response.choices[0]
-            tool_calls = choice.message.tool_calls or []
+            response = llm_with_tools.invoke(working)
+            if not isinstance(response, AIMessage):
+                break
+            tool_calls = _extract_tool_calls(response)
             if not tool_calls:
                 break
 
-            working.append(
-                {
-                    "role": "assistant",
-                    "content": choice.message.content or "",
-                    "tool_calls": [
-                        {
-                            "id": call.id,
-                            "type": "function",
-                            "function": {
-                                "name": call.function.name,
-                                "arguments": call.function.arguments,
-                            },
-                        }
-                        for call in tool_calls
-                    ],
-                }
-            )
-
+            working.append(response)
             for call in tool_calls:
-                result = self._call_tool_safely(call.function.name, call.function.arguments)
-                working.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call.id,
-                        "content": result,
-                    }
-                )
+                result = self._call_tool_safely(call["name"], call["args"])
+                working.append(ToolMessage(content=result, tool_call_id=call["id"]))
 
             tool_rounds += 1
 
         return working
 
-    def _call_tool_safely(self, name: str, arguments: str | None) -> str:
+    def _call_tool_safely(self, name: str, arguments: dict[str, Any]) -> str:
         try:
-            payload = json.loads(arguments or "{}")
-        except json.JSONDecodeError as exc:
-            return f"Tool error: invalid arguments ({exc})"
-        try:
-            return self._registry.call(name, payload if isinstance(payload, dict) else {})
+            return self._registry.call(name, arguments if isinstance(arguments, dict) else {})
         except Exception as exc:  # pylint: disable=broad-except
             return f"Tool error: {exc}"
+
+
+def _build_chat_llm(settings: Settings, streaming: bool) -> ChatOpenAI:
+    if not settings.agent_api_key:
+        raise ValueError("agent api_key is not configured")
+
+    sig = inspect.signature(ChatOpenAI)
+    kwargs: dict[str, Any] = {"model": settings.agent_model}
+
+    if "temperature" in sig.parameters:
+        kwargs["temperature"] = settings.agent_temperature
+    if "max_tokens" in sig.parameters:
+        kwargs["max_tokens"] = settings.agent_max_tokens
+
+    if "api_key" in sig.parameters:
+        kwargs["api_key"] = settings.agent_api_key
+    elif "openai_api_key" in sig.parameters:
+        kwargs["openai_api_key"] = settings.agent_api_key
+
+    if settings.agent_base_url:
+        if "base_url" in sig.parameters:
+            kwargs["base_url"] = settings.agent_base_url
+        elif "openai_api_base" in sig.parameters:
+            kwargs["openai_api_base"] = settings.agent_base_url
+
+    if "streaming" in sig.parameters:
+        kwargs["streaming"] = streaming
+
+    llm = ChatOpenAI(**kwargs)
+    if streaming and not getattr(llm, "streaming", False):
+        try:
+            llm.streaming = True
+        except Exception:
+            pass
+    return llm
+
+
+def _extract_tool_calls(message: AIMessage) -> list[dict[str, Any]]:
+    raw_calls = getattr(message, "tool_calls", None) or []
+    if not raw_calls:
+        raw_calls = message.additional_kwargs.get("tool_calls", []) if message.additional_kwargs else []
+
+    normalized: list[dict[str, Any]] = []
+    for call in raw_calls:
+        parsed = _normalize_tool_call(call)
+        if parsed:
+            normalized.append(parsed)
+    return normalized
+
+
+def _normalize_tool_call(call: Any) -> dict[str, Any] | None:
+    if isinstance(call, dict):
+        if "name" in call and "args" in call:
+            return {
+                "id": call.get("id") or str(uuid4()),
+                "name": call.get("name", ""),
+                "args": _parse_tool_args(call.get("args")),
+            }
+        if "function" in call:
+            func = call.get("function") or {}
+            return {
+                "id": call.get("id") or str(uuid4()),
+                "name": func.get("name", ""),
+                "args": _parse_tool_args(func.get("arguments")),
+            }
+    name = getattr(call, "name", None)
+    if name:
+        return {
+            "id": getattr(call, "id", None) or str(uuid4()),
+            "name": name,
+            "args": _parse_tool_args(getattr(call, "args", None)),
+        }
+    return None
+
+
+def _parse_tool_args(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            payload = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+    return {}
+
+
+def _chunk_to_text(chunk: Any) -> str:
+    content = getattr(chunk, "content", None)
+    if content is None and hasattr(chunk, "text"):
+        content = chunk.text
+    if not content:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text") or item.get("content") or ""
+                if text:
+                    parts.append(text)
+        return "".join(parts)
+    return str(content)
 
 
 def _truncate_title(text: str, limit: int = 32) -> str:

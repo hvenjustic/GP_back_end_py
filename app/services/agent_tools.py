@@ -8,6 +8,8 @@ from urllib.parse import urlparse
 from uuid import uuid4
 from urllib.request import Request, urlopen
 
+from langchain.tools import StructuredTool
+from langchain_core.tools import BaseTool
 from sqlalchemy import text
 
 from app.config import Settings
@@ -39,6 +41,13 @@ class ToolDefinition:
             },
         }
 
+    def to_langchain_tool(self) -> BaseTool:
+        return StructuredTool.from_function(
+            func=self.handler,
+            name=self.name,
+            description=self.description,
+        )
+
 
 class ToolRegistry:
     def __init__(self) -> None:
@@ -52,6 +61,9 @@ class ToolRegistry:
 
     def to_openai_tools(self, enabled: set[str]) -> list[dict[str, Any]]:
         return [tool.to_openai_tool() for tool in self.get_enabled(enabled)]
+
+    def to_langchain_tools(self, enabled: set[str]) -> list[BaseTool]:
+        return [tool.to_langchain_tool() for tool in self.get_enabled(enabled)]
 
     def call(self, name: str, args: dict[str, Any]) -> str:
         tool = self._tools.get(name)
