@@ -18,7 +18,10 @@ EXAMPLES = [
             "Acme Bio Inc. partners with Example University on a fermentation process. "
             "Acme Bio Inc. supplies ReagentX reagent for research. "
             "Dr. Jane Doe is a Scientist at Example University. "
-            "Example University publishes the research paper Fermentation Breakthrough.\n"
+            "Example University publishes the research paper Fermentation Breakthrough. "
+            "Dr. Jane Doe has filed a patent on Cell Culture Technology. "
+            "The fermentation process impacts product yield. "
+            "Acme Bio Inc. launched a new product BioReactor in 2025.\n"
         ),
         extractions=[
             lx.data.Extraction(
@@ -112,6 +115,54 @@ EXAMPLES = [
                     "source": "Example University",
                     "target": "Fermentation Breakthrough",
                     "type": "PUBLISHES",
+                },
+            ),
+            # 隐含关系示例 1：科学家的专利（推断为 PUBLISHES）
+            lx.data.Extraction(
+                extraction_class="entity",
+                extraction_text="Cell Culture Technology",
+                attributes={
+                    "name": "Cell Culture Technology",
+                    "type": "Patent",
+                    "description": "A patent on cell culture technology.",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="relation",
+                extraction_text="Dr. Jane Doe has filed a patent on Cell Culture Technology",
+                attributes={
+                    "source": "Jane Doe",
+                    "target": "Cell Culture Technology",
+                    "type": "PUBLISHES",
+                },
+            ),
+            # 隐含关系示例 2：工艺影响产量
+            lx.data.Extraction(
+                extraction_class="relation",
+                extraction_text="fermentation process impacts product yield",
+                attributes={
+                    "source": "fermentation process",
+                    "target": "product yield",
+                    "type": "IMPACTS",
+                },
+            ),
+            # 隐含关系示例 3：公司发布产品（推断为 ANNOUNCED_LAUNCH_EVENT）
+            lx.data.Extraction(
+                extraction_class="entity",
+                extraction_text="BioReactor",
+                attributes={
+                    "name": "BioReactor",
+                    "type": "Equipment",
+                    "description": "A new bioreactor product.",
+                },
+            ),
+            lx.data.Extraction(
+                extraction_class="relation",
+                extraction_text="Acme Bio Inc. launched a new product BioReactor",
+                attributes={
+                    "source": "Acme Bio Inc.",
+                    "target": "BioReactor",
+                    "type": "ANNOUNCED_LAUNCH_EVENT",
                 },
             ),
         ],
