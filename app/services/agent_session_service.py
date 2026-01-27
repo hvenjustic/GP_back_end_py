@@ -8,6 +8,7 @@ from app.models import AgentMessage, AgentSession
 from app.schemas import (
     AgentMessageResponse,
     AgentSessionCreateRequest,
+    AgentSessionDeleteResponse,
     AgentSessionDetailResponse,
     AgentSessionResponse,
 )
@@ -78,3 +79,17 @@ def get_session_detail(session_id: str, db: Session) -> AgentSessionDetailRespon
             for item in messages
         ],
     )
+
+
+def delete_session(session_id: str, db: Session) -> AgentSessionDeleteResponse:
+    session = db.query(AgentSession).filter_by(id=session_id).first()
+    if not session:
+        raise ServiceError(status_code=404, message="session not found")
+
+    db.query(AgentMessage).filter_by(session_id=session_id).delete(
+        synchronize_session=False
+    )
+    db.delete(session)
+    db.commit()
+
+    return AgentSessionDeleteResponse(session_id=session_id, deleted=True)

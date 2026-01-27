@@ -191,3 +191,8 @@ class AgentMessageResponse(BaseModel):
 class AgentSessionDetailResponse(BaseModel):
     session: AgentSessionResponse
     messages: list[AgentMessageResponse]
+
+
+class AgentSessionDeleteResponse(BaseModel):
+    session_id: str
+    deleted: bool

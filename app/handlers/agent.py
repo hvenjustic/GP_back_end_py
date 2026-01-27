@@ -8,12 +8,14 @@ from app.config import get_settings
 from app.db import get_db
 from app.schemas import (
     AgentSessionCreateRequest,
+    AgentSessionDeleteResponse,
     AgentSessionDetailResponse,
     AgentSessionResponse,
 )
 from app.services.agent_service import AgentService
 from app.services.agent_session_service import (
     create_session as create_agent_session,
+    delete_session as delete_agent_session,
     get_session_detail,
     list_sessions as list_agent_sessions,
 )
@@ -54,5 +56,15 @@ def get_session(
 ) -> AgentSessionDetailResponse:
     try:
         return get_session_detail(session_id, db)
+    except ServiceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+def delete_session(
+    session_id: str,
+    db: Session = Depends(get_db),
+) -> AgentSessionDeleteResponse:
+    try:
+        return delete_agent_session(session_id, db)
     except ServiceError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc

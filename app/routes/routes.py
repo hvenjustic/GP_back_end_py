@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from app.handlers import agent, api, crawl, graph
 from app.schemas import (
     AgentSessionDetailResponse,
+    AgentSessionDeleteResponse,
     AgentSessionResponse,
     ClearQueueResponse,
     CrawlResponse,
@@ -163,5 +164,11 @@ agent_group.add_api_route(
     agent.get_session,
     methods=["GET"],
     response_model=AgentSessionDetailResponse,
+)
+agent_group.add_api_route(
+    "/sessions/{session_id}",
+    agent.delete_session,
+    methods=["DELETE"],
+    response_model=AgentSessionDeleteResponse,
 )
 router.include_router(agent_group)
