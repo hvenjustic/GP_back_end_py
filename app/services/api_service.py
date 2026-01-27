@@ -545,6 +545,12 @@ def build_graph(request: IDRequest, db: Session) -> QueueAckResponse:
     if not job or not is_crawl_job_done(job.status):
         raise ServiceError(status_code=400, message="task not finished")
 
+    task.graph_json = None
+    task.llm_processed_at = None
+    task.llm_duration_ms = 0
+    task.updated_at = datetime.utcnow()
+    db.commit()
+
     async_result = build_graph_task.delay(request.id)
     rdb = get_redis_client()
     rdb.sadd(GRAPH_ACTIVE_SET_KEY, async_result.id)
@@ -562,10 +568,15 @@ def build_graph_batch(request: GraphBatchRequest, db: Session) -> QueueAckRespon
     tasks = get_tasks_by_ids(db, ids)
     rdb = get_redis_client()
     queued = 0
+    now = datetime.utcnow()
     for task in tasks:
         job = _find_latest_job(db, task.url)
         if not job or not is_crawl_job_done(job.status):
             continue
+        task.graph_json = None
+        task.llm_processed_at = None
+        task.llm_duration_ms = 0
+        task.updated_at = now
         async_result = build_graph_task.delay(int(task.id))
         rdb.sadd(GRAPH_ACTIVE_SET_KEY, async_result.id)
         rdb.hset(GRAPH_TASK_MAP_KEY, async_result.id, int(task.id))

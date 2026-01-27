@@ -135,6 +135,7 @@ def build_default_registry(settings: Settings) -> ToolRegistry:
         url: str,
         name: str | None = None,
         auto_build_graph: bool = True,
+        recrawl: bool = False,
         max_depth: int | None = None,
         max_pages: int | None = None,
         concurrency: int | None = None,
@@ -178,6 +179,21 @@ def build_default_registry(settings: Settings) -> ToolRegistry:
             task = upsert_task_for_submission(db, raw_url, cleaned_name)
             db.flush()
             task_id = int(task.id)
+            if recrawl:
+                params_for_cleanup = build_crawl_params(settings, CrawlRequest(root_url=raw_url))
+                normalized_for_cleanup = normalize_url(raw_url, raw_url, params_for_cleanup)
+                roots = {raw_url}
+                if normalized_for_cleanup:
+                    roots.add(normalized_for_cleanup)
+                old_jobs = db.query(CrawlJob.job_id).filter(CrawlJob.root_url.in_(roots)).all()
+                old_job_ids = [job_id for (job_id,) in old_jobs]
+                if old_job_ids:
+                    db.query(SitePage).filter(SitePage.job_id.in_(old_job_ids)).delete(
+                        synchronize_session=False
+                    )
+                    db.query(CrawlJob).filter(CrawlJob.job_id.in_(old_job_ids)).delete(
+                        synchronize_session=False
+                    )
             task.crawl_count = int(task.crawl_count or 0) + 1
             task.is_crawled = False
             task.crawled_at = None
@@ -240,7 +256,7 @@ def build_default_registry(settings: Settings) -> ToolRegistry:
             ensure_ascii=False,
         )
 
-    def build_graph(task_id: int) -> str:
+    def build_graph(task_id: int, rebuild: bool = True) -> str:
         if task_id <= 0:
             return json.dumps({"status": "error", "error": "task_id invalid"}, ensure_ascii=False)
         db = SessionLocal()
@@ -265,6 +281,12 @@ def build_default_registry(settings: Settings) -> ToolRegistry:
                     {"status": "not_ready", "error": "crawl job not finished"},
                     ensure_ascii=False,
                 )
+            if rebuild:
+                task.graph_json = None
+                task.llm_processed_at = None
+                task.llm_duration_ms = 0
+                task.updated_at = datetime.utcnow()
+                db.commit()
         finally:
             db.close()
 
@@ -376,7 +398,7 @@ def build_default_registry(settings: Settings) -> ToolRegistry:
                     "running": running_count,
                     "total": queue_total,
                 },
-                "enqueue_available": enqueue_available,
+                "available": enqueue_available,
                 "failed": {
                     "count": failed_count,
                     "limit": limit,
@@ -388,6 +410,232 @@ def build_default_registry(settings: Settings) -> ToolRegistry:
         finally:
             db.close()
 
+    def crawl_tasks_list(category: str = "available", limit: int = 20) -> str:
+        cat = (category or "").strip().lower()
+        limit = max(1, min(int(limit or 20), 200))
+        db = SessionLocal()
+        try:
+            if cat in {"queued", "pending", "running", "failed"}:
+                status_map = {
+                    "queued": "PENDING",
+                    "pending": "PENDING",
+                    "running": "RUNNING",
+                    "failed": "FAILED",
+                }
+                status = status_map.get(cat)
+                jobs = (
+                    db.query(CrawlJob)
+                    .filter(CrawlJob.status == status)
+                    .order_by(CrawlJob.updated_at.desc())
+                    .limit(limit)
+                    .all()
+                )
+                task_ids: set[int] = set()
+                root_urls: set[str] = set()
+                for job in jobs:
+                    params = _parse_job_params(job.params)
+                    task_id = _coerce_int(params.get("task_id"))
+                    if task_id:
+                        task_ids.add(task_id)
+                    if job.root_url:
+                        root_urls.add(job.root_url)
+
+                tasks_by_id: dict[int, SiteTask] = {}
+                if task_ids:
+                    tasks = db.query(SiteTask).filter(SiteTask.id.in_(task_ids)).all()
+                    tasks_by_id = {int(task.id): task for task in tasks}
+
+                tasks_by_url: dict[str, SiteTask] = {}
+                if root_urls:
+                    tasks = db.query(SiteTask).filter(SiteTask.url.in_(root_urls)).all()
+                    tasks_by_url = {task.url: task for task in tasks}
+
+                items: list[dict[str, Any]] = []
+                for job in jobs:
+                    params = _parse_job_params(job.params)
+                    task_id = _coerce_int(params.get("task_id"))
+                    task = tasks_by_id.get(task_id) if task_id is not None else None
+                    if not task and job.root_url:
+                        task = tasks_by_url.get(job.root_url)
+                    items.append(
+                        {
+                            "job_id": job.job_id,
+                            "task_id": int(task.id) if task else None,
+                            "name": (task.site_name or task.name) if task else None,
+                            "url": task.url if task else job.root_url,
+                            "status": job.status,
+                            "updated_at": job.updated_at,
+                            "error_message": job.error_message,
+                        }
+                    )
+                return json.dumps(
+                    {"status": "ok", "category": cat, "count": len(items), "items": items},
+                    ensure_ascii=False,
+                    default=str,
+                )
+
+            if cat in {"available", "ready"}:
+                active_jobs = (
+                    db.query(CrawlJob)
+                    .filter(CrawlJob.status.in_(["PENDING", "RUNNING"]))
+                    .all()
+                )
+                active_task_ids: set[int] = set()
+                active_root_urls: set[str] = set()
+                for job in active_jobs:
+                    params = _parse_job_params(job.params)
+                    task_id = _coerce_int(params.get("task_id"))
+                    if task_id:
+                        active_task_ids.add(task_id)
+                    if job.root_url:
+                        active_root_urls.add(job.root_url)
+
+                query = db.query(SiteTask)
+                if active_task_ids:
+                    query = query.filter(~SiteTask.id.in_(active_task_ids))
+                if active_root_urls:
+                    query = query.filter(~SiteTask.url.in_(active_root_urls))
+                tasks = query.order_by(SiteTask.id.desc()).limit(limit).all()
+                items = [
+                    {
+                        "id": int(task.id),
+                        "name": task.name,
+                        "site_name": task.site_name,
+                        "url": task.url,
+                        "is_crawled": bool(task.is_crawled),
+                        "updated_at": task.updated_at,
+                    }
+                    for task in tasks
+                ]
+                return json.dumps(
+                    {"status": "ok", "category": cat, "count": len(items), "items": items},
+                    ensure_ascii=False,
+                    default=str,
+                )
+
+            if cat in {"completed", "crawled"}:
+                tasks = (
+                    db.query(SiteTask)
+                    .filter(SiteTask.is_crawled.is_(True))
+                    .order_by(SiteTask.id.desc())
+                    .limit(limit)
+                    .all()
+                )
+                items = [
+                    {
+                        "id": int(task.id),
+                        "name": task.name,
+                        "site_name": task.site_name,
+                        "url": task.url,
+                        "crawled_at": task.crawled_at,
+                        "updated_at": task.updated_at,
+                    }
+                    for task in tasks
+                ]
+                return json.dumps(
+                    {"status": "ok", "category": cat, "count": len(items), "items": items},
+                    ensure_ascii=False,
+                    default=str,
+                )
+
+            return json.dumps(
+                {"status": "error", "error": "category invalid"},
+                ensure_ascii=False,
+            )
+        finally:
+            db.close()
+
+    def crawl_tasks_enqueue(task_ids: list[int] | None = None, recrawl: bool = False) -> str:
+        ids = [int(item) for item in (task_ids or []) if int(item) > 0]
+        if not ids:
+            return json.dumps({"status": "error", "error": "task_ids empty"}, ensure_ascii=False)
+
+        db = SessionLocal()
+        try:
+            tasks = db.query(SiteTask).filter(SiteTask.id.in_(ids)).all()
+            if not tasks:
+                return json.dumps({"status": "error", "error": "tasks not found"}, ensure_ascii=False)
+
+            queued = 0
+            queued_ids: list[int] = []
+            rdb = get_redis_client()
+            for task in tasks:
+                raw_url = (task.url or "").strip()
+                if not raw_url:
+                    continue
+                if recrawl:
+                    params_for_cleanup = build_crawl_params(settings, CrawlRequest(root_url=raw_url))
+                    normalized_for_cleanup = normalize_url(raw_url, raw_url, params_for_cleanup)
+                    roots = {raw_url}
+                    if normalized_for_cleanup:
+                        roots.add(normalized_for_cleanup)
+                    old_jobs = db.query(CrawlJob.job_id).filter(CrawlJob.root_url.in_(roots)).all()
+                    old_job_ids = [job_id for (job_id,) in old_jobs]
+                    if old_job_ids:
+                        db.query(SitePage).filter(SitePage.job_id.in_(old_job_ids)).delete(
+                            synchronize_session=False
+                        )
+                        db.query(CrawlJob).filter(CrawlJob.job_id.in_(old_job_ids)).delete(
+                            synchronize_session=False
+                        )
+
+                now = datetime.utcnow()
+                task.crawl_count = int(task.crawl_count or 0) + 1
+                task.is_crawled = False
+                task.crawled_at = None
+                task.page_count = 0
+                task.graph_json = None
+                task.llm_processed_at = None
+                task.llm_duration_ms = 0
+                task.crawl_duration_ms = 0
+                task.updated_at = now
+
+                params = build_crawl_params(settings, CrawlRequest(root_url=raw_url))
+                normalized_root = normalize_url(raw_url, raw_url, params)
+                if not normalized_root:
+                    continue
+
+                job_id = str(uuid4())
+                job_params = params.to_dict()
+                job_params["task_id"] = int(task.id)
+                job = CrawlJob(
+                    job_id=job_id,
+                    root_url=normalized_root,
+                    status="PENDING",
+                    created_at=now,
+                    updated_at=now,
+                    discovered_count=1,
+                    queued_count=1,
+                    params=job_params,
+                )
+                root_page = SitePage(
+                    job_id=job_id,
+                    url=normalized_root,
+                    url_hash=hash_url(normalized_root),
+                    childrens=[],
+                    parent_url=None,
+                    depth=0,
+                    crawled=False,
+                    crawl_status="PENDING",
+                )
+                db.add(job)
+                db.add(root_page)
+                db.commit()
+
+                crawl_job_task.delay(job_id)
+                rdb.sadd(CRAWL_ACTIVE_SET_KEY, job_id)
+                queued += 1
+                queued_ids.append(int(task.id))
+
+            return json.dumps(
+                {"status": "queued", "queued": queued, "task_ids": queued_ids},
+                ensure_ascii=False,
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            db.rollback()
+            return json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False)
+        finally:
+            db.close()
     def graph_status() -> str:
         db = SessionLocal()
         try:
@@ -530,6 +778,7 @@ def build_default_registry(settings: Settings) -> ToolRegistry:
             queued = 0
             queued_ids: list[int] = []
             rdb = get_redis_client()
+            now = datetime.utcnow()
             for task in tasks:
                 job = get_latest_job_by_root_url(db, task.url)
                 if not job:
@@ -545,11 +794,18 @@ def build_default_registry(settings: Settings) -> ToolRegistry:
                     "finished",
                 }:
                     continue
+                task.graph_json = None
+                task.llm_processed_at = None
+                task.llm_duration_ms = 0
+                task.updated_at = now
                 async_result = build_graph_task.delay(int(task.id))
                 rdb.sadd(GRAPH_ACTIVE_SET_KEY, async_result.id)
                 rdb.hset(GRAPH_TASK_MAP_KEY, async_result.id, int(task.id))
                 queued += 1
                 queued_ids.append(int(task.id))
+
+            if queued_ids:
+                db.commit()
 
             return json.dumps(
                 {"status": "queued", "queued": queued, "task_ids": queued_ids},
@@ -677,6 +933,11 @@ def build_default_registry(settings: Settings) -> ToolRegistry:
                         "description": "Auto build knowledge graph after crawl completes.",
                         "default": True,
                     },
+                    "recrawl": {
+                        "type": "boolean",
+                        "description": "Delete old crawl data before crawling again.",
+                        "default": False,
+                    },
                     "max_depth": {"type": "integer", "description": "Override crawl max depth."},
                     "max_pages": {"type": "integer", "description": "Override crawl max pages."},
                     "concurrency": {"type": "integer", "description": "Override crawl concurrency."},
@@ -701,7 +962,12 @@ def build_default_registry(settings: Settings) -> ToolRegistry:
             parameters={
                 "type": "object",
                 "properties": {
-                    "task_id": {"type": "integer", "description": "Site task id."}
+                    "task_id": {"type": "integer", "description": "Site task id."},
+                    "rebuild": {
+                        "type": "boolean",
+                        "description": "Delete old graph data before building.",
+                        "default": True,
+                    },
                 },
                 "required": ["task_id"],
             },
@@ -724,6 +990,53 @@ def build_default_registry(settings: Settings) -> ToolRegistry:
                 },
             },
             handler=crawl_status,
+        )
+    )
+
+    registry.register(
+        ToolDefinition(
+            name="crawl_tasks_list",
+            description="List crawl tasks by category.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "description": "available|queued|running|failed|completed",
+                        "default": "available",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max tasks to return (default 20).",
+                        "default": 20,
+                    },
+                },
+            },
+            handler=crawl_tasks_list,
+        )
+    )
+
+    registry.register(
+        ToolDefinition(
+            name="crawl_tasks_enqueue",
+            description="Enqueue crawl tasks by id.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "task_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Site task ids.",
+                    },
+                    "recrawl": {
+                        "type": "boolean",
+                        "description": "Delete old crawl data before crawling again.",
+                        "default": False,
+                    },
+                },
+                "required": ["task_ids"],
+            },
+            handler=crawl_tasks_enqueue,
         )
     )
 

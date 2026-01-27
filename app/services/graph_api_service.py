@@ -15,6 +15,11 @@ def build_graph(request: GraphBuildRequest, db: Session) -> GraphBuildResponse:
     if not task:
         raise ServiceError(status_code=404, message="site_task not found")
 
+    task.graph_json = None
+    task.llm_processed_at = None
+    task.llm_duration_ms = 0
+    db.commit()
+
     async_result = build_graph_task.delay(request.task_id)
     rdb = get_redis_client()
     rdb.sadd(GRAPH_ACTIVE_SET_KEY, async_result.id)
