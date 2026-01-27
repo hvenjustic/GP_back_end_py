@@ -46,6 +46,7 @@ if __name__ == "__main__":
     import subprocess
     import sys
     import signal
+    import redis
 
     import uvicorn
 
@@ -68,23 +69,27 @@ if __name__ == "__main__":
         logger.info("starting worker: %s", " ".join(cmd))
         return subprocess.Popen(cmd, start_new_session=True)
 
+    def _flush_redis() -> None:
+        try:
+            rdb = redis.Redis.from_url(settings.redis_url, decode_responses=True)
+            rdb.flushdb()
+            logger.info("redis flushed for dev cleanup")
+        except Exception:  # pylint: disable=broad-except
+            logger.exception("failed to flush redis")
+
     def _stop_worker(proc: subprocess.Popen) -> None:
-        if proc.poll() is not None:
-            return
-        logger.info("stopping worker pid=%s", proc.pid)
+        if proc.poll() is None:
+            logger.info("force killing worker pid=%s", proc.pid)
         try:
-            os.killpg(proc.pid, signal.SIGTERM)
+            os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
-            return
-        try:
-            proc.wait(timeout=20)
-        except subprocess.TimeoutExpired:
-            logger.warning("worker did not exit in time, forcing kill pid=%s", proc.pid)
+            pass
+        else:
             try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                return
-            proc.wait(timeout=5)
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                pass
+        _flush_redis()
 
     worker = _start_worker()
     try:
