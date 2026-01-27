@@ -7,6 +7,7 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -18,6 +19,7 @@ from app.repositories.site_task_repository import (
     get_tasks_by_ids,
     list_geo_locations,
     list_tasks,
+    list_tasks_pending_on_sale,
     list_tasks_with_graph,
     upsert_task_for_submission,
 )
@@ -32,6 +34,10 @@ from app.schemas import (
     GraphVisualResponse,
     IDRequest,
     ListResultsResponse,
+    ProductOnSaleRequest,
+    ProductOnSaleResponse,
+    ProductReviewItem,
+    ProductReviewResponse,
     QueueAckResponse,
     QueueStatusResponse,
     ResultDetailResponse,
@@ -186,6 +192,7 @@ def _build_result_item(task: SiteTask, job: CrawlJob | None) -> ResultItem:
         crawled_at=task.crawled_at,
         llm_processed_at=task.llm_processed_at,
         is_crawled=bool(task.is_crawled),
+        on_sale=bool(task.on_sale),
         crawl_count=int(task.crawl_count or 0),
         page_count=int(task.page_count or 0),
         graph_json=task.graph_json,
@@ -204,6 +211,18 @@ def _build_result_item(task: SiteTask, job: CrawlJob | None) -> ResultItem:
             item.page_count = job.crawled_count
 
     return item
+
+
+def _build_review_item(task: SiteTask) -> ProductReviewItem:
+    return ProductReviewItem(
+        id=int(task.id),
+        name=task.name,
+        site_name=task.site_name,
+        url=task.url,
+        llm_processed_at=task.llm_processed_at,
+        updated_at=task.updated_at,
+        on_sale=bool(task.on_sale),
+    )
 
 
 def _parse_geo_location(raw: Any) -> tuple[float, float] | None:
@@ -472,6 +491,21 @@ def list_products(
     return ListResultsResponse(items=items, total=total, page=page, page_size=page_size)
 
 
+def list_review_products(
+    page: int, page_size: int, db: Session
+) -> ProductReviewResponse:
+    if page < 1:
+        page = 1
+    if page_size < 1:
+        page_size = 20
+    if page_size > 100:
+        page_size = 100
+
+    tasks, total = list_tasks_pending_on_sale(db, page, page_size)
+    items = [_build_review_item(task) for task in tasks]
+    return ProductReviewResponse(items=items, total=total, page=page, page_size=page_size)
+
+
 def get_result_detail(task_id: int, db: Session) -> ResultDetailResponse:
     if task_id <= 0:
         raise ServiceError(status_code=400, message="id invalid")
@@ -551,3 +585,34 @@ def get_graph_status() -> QueueStatusResponse:
     _cleanup_celery_active(rdb, GRAPH_ACTIVE_SET_KEY)
     pending = _queue_pending(rdb, GRAPH_QUEUE_KEY, GRAPH_ACTIVE_SET_KEY)
     return QueueStatusResponse(pending=pending, queue_key=GRAPH_QUEUE_KEY)
+
+
+def set_products_on_sale(
+    request: ProductOnSaleRequest, db: Session
+) -> ProductOnSaleResponse:
+    ids = [int(item) for item in request.ids if int(item) > 0]
+    if not ids:
+        raise ServiceError(status_code=400, message="ids empty")
+
+    graph_ready = (
+        SiteTask.graph_json.isnot(None)
+        & (func.length(func.trim(SiteTask.graph_json)) > 0)
+    )
+    tasks = (
+        db.query(SiteTask)
+        .filter(SiteTask.id.in_(ids))
+        .filter(SiteTask.on_sale.is_(False))
+        .filter(graph_ready)
+        .all()
+    )
+
+    updated_ids: list[int] = []
+    if tasks:
+        now = datetime.utcnow()
+        for task in tasks:
+            task.on_sale = True
+            task.updated_at = now
+            updated_ids.append(int(task.id))
+        db.commit()
+
+    return ProductOnSaleResponse(updated=len(updated_ids), ids=updated_ids)

@@ -88,6 +88,7 @@ class SiteTask(Base):
     geo_location = Column(JSON)
     crawled_at = Column(DateTime)
     is_crawled = Column(Boolean, default=False, nullable=False)
+    on_sale = Column(Boolean, default=False, nullable=False)
     crawl_count = Column(Integer, default=0, nullable=False)
     page_count = Column(Integer, default=0, nullable=False)
     graph_json = Column(LONGTEXT)

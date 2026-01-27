@@ -425,6 +425,76 @@ def build_default_registry(settings: Settings) -> ToolRegistry:
         finally:
             db.close()
 
+    def product_status() -> str:
+        db = SessionLocal()
+        try:
+            total_tasks = db.query(SiteTask).count()
+            on_sale_count = db.query(SiteTask).filter(SiteTask.on_sale.is_(True)).count()
+            graph_ready = func.length(func.trim(SiteTask.graph_json)) > 0
+            pending_count = (
+                db.query(SiteTask)
+                .filter(SiteTask.on_sale.is_(False))
+                .filter(SiteTask.graph_json.isnot(None))
+                .filter(graph_ready)
+                .count()
+            )
+            payload = {
+                "on_sale": on_sale_count,
+                "pending": pending_count,
+                "total_tasks": total_tasks,
+            }
+            return json.dumps(payload, ensure_ascii=False, default=str)
+        finally:
+            db.close()
+
+    def set_products_on_sale(ids: list[int] | None = None, all_pending: bool = False) -> str:
+        ids_list = [int(item) for item in (ids or []) if int(item) > 0]
+        if not ids_list and not all_pending:
+            return json.dumps(
+                {"status": "error", "error": "ids empty and all_pending false"},
+                ensure_ascii=False,
+            )
+
+        db = SessionLocal()
+        try:
+            graph_ready = (
+                SiteTask.graph_json.isnot(None)
+                & (func.length(func.trim(SiteTask.graph_json)) > 0)
+            )
+            query = (
+                db.query(SiteTask)
+                .filter(SiteTask.on_sale.is_(False))
+                .filter(graph_ready)
+            )
+            if not all_pending:
+                query = query.filter(SiteTask.id.in_(ids_list))
+            tasks = query.all()
+            if not tasks:
+                return json.dumps({"status": "no_change", "updated": 0, "ids": []}, ensure_ascii=False)
+
+            now = datetime.utcnow()
+            updated_ids: list[int] = []
+            for task in tasks:
+                task.on_sale = True
+                task.updated_at = now
+                updated_ids.append(int(task.id))
+            db.commit()
+
+            return json.dumps(
+                {
+                    "status": "updated",
+                    "mode": "all_pending" if all_pending else "ids",
+                    "updated": len(updated_ids),
+                    "ids": updated_ids,
+                },
+                ensure_ascii=False,
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            db.rollback()
+            return json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False)
+        finally:
+            db.close()
+
     registry.register(
         ToolDefinition(
             name="http_get",
@@ -530,6 +600,38 @@ def build_default_registry(settings: Settings) -> ToolRegistry:
             description="Get knowledge graph build progress summary.",
             parameters={"type": "object", "properties": {}},
             handler=graph_status,
+        )
+    )
+
+    registry.register(
+        ToolDefinition(
+            name="product_status",
+            description="Get product on-sale status counts.",
+            parameters={"type": "object", "properties": {}},
+            handler=product_status,
+        )
+    )
+
+    registry.register(
+        ToolDefinition(
+            name="set_products_on_sale",
+            description="Set products as on-sale when graph is ready.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Product task ids to set on sale.",
+                    },
+                    "all_pending": {
+                        "type": "boolean",
+                        "description": "Set all pending products on sale.",
+                        "default": False,
+                    },
+                },
+            },
+            handler=set_products_on_sale,
         )
     )
 

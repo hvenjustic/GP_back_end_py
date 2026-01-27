@@ -111,6 +111,7 @@ class ResultItem(BaseModel):
     crawled_at: datetime | None = None
     llm_processed_at: datetime | None = None
     is_crawled: bool
+    on_sale: bool
     crawl_count: int
     page_count: int
     graph_json: str | None = None
@@ -126,6 +127,32 @@ class ListResultsResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class ProductReviewItem(BaseModel):
+    id: int
+    name: str | None = None
+    site_name: str | None = None
+    url: str
+    llm_processed_at: datetime | None = None
+    updated_at: datetime | None = None
+    on_sale: bool
+
+
+class ProductReviewResponse(BaseModel):
+    items: list[ProductReviewItem]
+    total: int
+    page: int
+    page_size: int
+
+
+class ProductOnSaleRequest(BaseModel):
+    ids: list[int]
+
+
+class ProductOnSaleResponse(BaseModel):
+    updated: int
+    ids: list[int]
 
 
 class ResultDetailResponse(BaseModel):

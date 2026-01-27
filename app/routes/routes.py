@@ -13,6 +13,8 @@ from app.schemas import (
     GraphLocateResponse,
     GraphVisualResponse,
     ListResultsResponse,
+    ProductOnSaleResponse,
+    ProductReviewResponse,
     QueueAckResponse,
     QueueStatusResponse,
     ResultDetailResponse,
@@ -98,6 +100,18 @@ api_group.add_api_route(
     api.list_products,
     methods=["GET"],
     response_model=ListResultsResponse,
+)
+api_group.add_api_route(
+    "/products/review",
+    api.list_review_products,
+    methods=["GET"],
+    response_model=ProductReviewResponse,
+)
+api_group.add_api_route(
+    "/products/on_sale",
+    api.set_products_on_sale,
+    methods=["POST"],
+    response_model=ProductOnSaleResponse,
 )
 api_group.add_api_route(
     "/results/{task_id}",

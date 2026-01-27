@@ -34,6 +34,7 @@ def upsert_task_for_submission(db: Session, url: str, name: str | None) -> SiteT
         name=name_value,
         site_name=name_value,
         is_crawled=False,
+        on_sale=False,
         crawled_at=None,
         llm_processed_at=None,
         page_count=0,
@@ -78,6 +79,34 @@ def list_tasks_with_graph(db: Session, page: int, page_size: int) -> tuple[list[
         db.query(SiteTask)
         .filter(SiteTask.graph_json.isnot(None))
         .filter(func.length(func.trim(SiteTask.graph_json)) > 0)
+    )
+    total = base_query.count()
+    items = (
+        base_query.order_by(SiteTask.id.desc())
+        .offset(offset)
+        .limit(page_size)
+        .all()
+    )
+    return items, total
+
+
+def list_tasks_pending_on_sale(
+    db: Session, page: int, page_size: int
+) -> tuple[list[SiteTask], int]:
+    if page < 1:
+        page = 1
+    if page_size < 1:
+        page_size = 20
+    if page_size > 100:
+        page_size = 100
+    offset = (page - 1) * page_size
+
+    graph_ready = func.length(func.trim(SiteTask.graph_json)) > 0
+    base_query = (
+        db.query(SiteTask)
+        .filter(SiteTask.on_sale.is_(False))
+        .filter(SiteTask.graph_json.isnot(None))
+        .filter(graph_ready)
     )
     total = base_query.count()
     items = (

@@ -14,6 +14,9 @@ from app.schemas import (
     GraphVisualResponse,
     IDRequest,
     ListResultsResponse,
+    ProductOnSaleRequest,
+    ProductOnSaleResponse,
+    ProductReviewResponse,
     QueueAckResponse,
     QueueStatusResponse,
     ResultDetailResponse,
@@ -76,6 +79,21 @@ def list_products(
     page: int = 1, page_size: int = 20, db: Session = Depends(get_db)
 ) -> ListResultsResponse:
     return api_service.list_products(page, page_size, db)
+
+
+def list_review_products(
+    page: int = 1, page_size: int = 20, db: Session = Depends(get_db)
+) -> ProductReviewResponse:
+    return api_service.list_review_products(page, page_size, db)
+
+
+def set_products_on_sale(
+    request: ProductOnSaleRequest, db: Session = Depends(get_db)
+) -> ProductOnSaleResponse | JSONResponse:
+    try:
+        return api_service.set_products_on_sale(request, db)
+    except ServiceError as exc:
+        return _json_error(exc.status_code, exc.message)
 
 
 def get_result_detail(
