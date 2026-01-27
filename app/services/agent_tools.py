@@ -10,7 +10,7 @@ from urllib.request import Request, urlopen
 
 from langchain.tools import StructuredTool
 from langchain_core.tools import BaseTool
-from sqlalchemy import text
+from sqlalchemy import func, or_, text
 
 from app.config import Settings
 from app.db import SessionLocal
@@ -106,6 +106,25 @@ def build_default_registry(settings: Settings) -> ToolRegistry:
             return json.dumps(rows, ensure_ascii=False, default=str)
         finally:
             db.close()
+
+    def _parse_job_params(raw: Any) -> dict[str, Any]:
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str):
+            try:
+                value = json.loads(raw)
+            except json.JSONDecodeError:
+                return {}
+            return value if isinstance(value, dict) else {}
+        return {}
+
+    def _coerce_int(value: Any) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     def crawl_site(
         url: str,
@@ -252,6 +271,160 @@ def build_default_registry(settings: Settings) -> ToolRegistry:
             ensure_ascii=False,
         )
 
+    def crawl_status(limit: int = 20) -> str:
+        limit = max(0, min(int(limit or 0), 200))
+        db = SessionLocal()
+        try:
+            pending_count = db.query(CrawlJob).filter(CrawlJob.status == "PENDING").count()
+            running_count = db.query(CrawlJob).filter(CrawlJob.status == "RUNNING").count()
+            queue_total = pending_count + running_count
+
+            failed_count = db.query(CrawlJob).filter(CrawlJob.status == "FAILED").count()
+            failed_jobs = (
+                db.query(CrawlJob)
+                .filter(CrawlJob.status == "FAILED")
+                .order_by(CrawlJob.updated_at.desc())
+                .limit(limit)
+                .all()
+            )
+
+            active_jobs = (
+                db.query(CrawlJob)
+                .filter(CrawlJob.status.in_(["PENDING", "RUNNING"]))
+                .all()
+            )
+            active_task_ids: set[int] = set()
+            active_root_urls: set[str] = set()
+            for job in active_jobs:
+                params = _parse_job_params(job.params)
+                task_id = _coerce_int(params.get("task_id"))
+                if task_id:
+                    active_task_ids.add(task_id)
+                if job.root_url:
+                    active_root_urls.add(job.root_url)
+
+            total_tasks = db.query(SiteTask).count()
+            available_query = db.query(SiteTask)
+            if active_task_ids:
+                available_query = available_query.filter(~SiteTask.id.in_(active_task_ids))
+            if active_root_urls:
+                available_query = available_query.filter(~SiteTask.url.in_(active_root_urls))
+            enqueue_available = available_query.count()
+
+            failed_task_ids: set[int] = set()
+            failed_urls: set[str] = set()
+            for job in failed_jobs:
+                params = _parse_job_params(job.params)
+                task_id = _coerce_int(params.get("task_id"))
+                if task_id:
+                    failed_task_ids.add(task_id)
+                if job.root_url:
+                    failed_urls.add(job.root_url)
+
+            tasks_by_id: dict[int, SiteTask] = {}
+            if failed_task_ids:
+                tasks = db.query(SiteTask).filter(SiteTask.id.in_(failed_task_ids)).all()
+                tasks_by_id = {int(task.id): task for task in tasks}
+
+            tasks_by_url: dict[str, SiteTask] = {}
+            if failed_urls:
+                tasks = db.query(SiteTask).filter(SiteTask.url.in_(failed_urls)).all()
+                tasks_by_url = {task.url: task for task in tasks}
+
+            failed_sites: list[dict[str, Any]] = []
+            seen: set[tuple[str, str]] = set()
+            for job in failed_jobs:
+                params = _parse_job_params(job.params)
+                task_id = _coerce_int(params.get("task_id"))
+                task = tasks_by_id.get(task_id) if task_id is not None else None
+                if not task and job.root_url:
+                    task = tasks_by_url.get(job.root_url)
+
+                name = ""
+                url = ""
+                if task:
+                    name = (task.site_name or task.name or "").strip()
+                    url = (task.url or "").strip()
+                if not name:
+                    parsed = urlparse(job.root_url or "")
+                    name = parsed.netloc or ""
+                url = url or (job.root_url or "")
+                key = (job.job_id or "", url)
+                if key in seen:
+                    continue
+                seen.add(key)
+                failed_sites.append(
+                    {
+                        "job_id": job.job_id,
+                        "task_id": int(task.id) if task else None,
+                        "name": name,
+                        "url": url,
+                        "error_message": job.error_message,
+                        "updated_at": job.updated_at,
+                    }
+                )
+
+            payload = {
+                "queue": {
+                    "pending": pending_count,
+                    "running": running_count,
+                    "total": queue_total,
+                },
+                "enqueue_available": enqueue_available,
+                "failed": {
+                    "count": failed_count,
+                    "limit": limit,
+                    "sites": failed_sites,
+                },
+                "total_tasks": total_tasks,
+            }
+            return json.dumps(payload, ensure_ascii=False, default=str)
+        finally:
+            db.close()
+
+    def graph_status() -> str:
+        db = SessionLocal()
+        try:
+            total_tasks = db.query(SiteTask).count()
+            completed_count = (
+                db.query(SiteTask).filter(SiteTask.llm_processed_at.isnot(None)).count()
+            )
+
+            graph_has_data = func.length(func.trim(SiteTask.graph_json)) > 0
+            in_queue_count = (
+                db.query(SiteTask)
+                .filter(SiteTask.llm_processed_at.is_(None))
+                .filter(SiteTask.graph_json.isnot(None))
+                .filter(graph_has_data)
+                .count()
+            )
+            buildable_count = (
+                db.query(SiteTask)
+                .filter(SiteTask.is_crawled.is_(True))
+                .filter(SiteTask.llm_processed_at.is_(None))
+                .filter(
+                    or_(
+                        SiteTask.graph_json.is_(None),
+                        func.length(func.trim(SiteTask.graph_json)) == 0,
+                    )
+                )
+                .count()
+            )
+            not_buildable_count = (
+                db.query(SiteTask).filter(SiteTask.is_crawled.is_(False)).count()
+            )
+
+            payload = {
+                "queue": {"count": in_queue_count},
+                "completed": completed_count,
+                "buildable": buildable_count,
+                "not_buildable": not_buildable_count,
+                "total_tasks": total_tasks,
+            }
+            return json.dumps(payload, ensure_ascii=False, default=str)
+        finally:
+            db.close()
+
     registry.register(
         ToolDefinition(
             name="http_get",
@@ -330,6 +503,33 @@ def build_default_registry(settings: Settings) -> ToolRegistry:
                 "required": ["task_id"],
             },
             handler=build_graph,
+        )
+    )
+
+    registry.register(
+        ToolDefinition(
+            name="crawl_status",
+            description="Get crawl queue progress and failed site list.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max failed sites to return (default 20).",
+                        "default": 20,
+                    }
+                },
+            },
+            handler=crawl_status,
+        )
+    )
+
+    registry.register(
+        ToolDefinition(
+            name="graph_status",
+            description="Get knowledge graph build progress summary.",
+            parameters={"type": "object", "properties": {}},
+            handler=graph_status,
         )
     )
 
