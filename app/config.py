@@ -26,6 +26,10 @@ DEFAULT_STATIC_EXTENSIONS = [
 class Settings:
     database_url: str
     redis_url: str
+    neo4j_uri: str = ""
+    neo4j_user: str = ""
+    neo4j_password: str = ""
+    neo4j_database: str = ""
     max_depth: int = 3
     max_pages: int = 5000
     concurrency: int = 5
@@ -161,6 +165,7 @@ def get_settings() -> Settings:
     langextract = data.get("langextract", {}) if isinstance(data, dict) else {}
     agent_cfg = data.get("agent", {}) if isinstance(data, dict) else {}
     cors_cfg = data.get("cors", {}) if isinstance(data, dict) else {}
+    neo4j_cfg = data.get("neo4j", {}) if isinstance(data, dict) else {}
 
     if not isinstance(langextract, dict):
         langextract = {}
@@ -168,6 +173,8 @@ def get_settings() -> Settings:
         agent_cfg = {}
     if not isinstance(cors_cfg, dict):
         cors_cfg = {}
+    if not isinstance(neo4j_cfg, dict):
+        neo4j_cfg = {}
 
     static_ext_raw = (
         crawl.get("static_extensions") if isinstance(crawl, dict) else None
@@ -193,6 +200,11 @@ def get_settings() -> Settings:
             redis_url = data["redis_url"]
         else:
             redis_url = _build_redis_url(data.get("redis"), redis_url)
+
+    neo4j_uri = str(neo4j_cfg.get("uri") or "").strip()
+    neo4j_user = str(neo4j_cfg.get("user") or "").strip()
+    neo4j_password = str(neo4j_cfg.get("password") or "").strip()
+    neo4j_database = str(neo4j_cfg.get("database") or "").strip()
 
     langextract_model_id = str(langextract.get("model_id") or "gemini-2.5-flash").strip()
     if not langextract_model_id:
@@ -227,6 +239,10 @@ def get_settings() -> Settings:
     return Settings(
         database_url=database_url,
         redis_url=redis_url,
+        neo4j_uri=neo4j_uri,
+        neo4j_user=neo4j_user,
+        neo4j_password=neo4j_password,
+        neo4j_database=neo4j_database,
         max_depth=_parse_int(crawl.get("max_depth"), 3),
         max_pages=_parse_int(crawl.get("max_pages"), 5000),
         concurrency=_parse_int(crawl.get("concurrency"), 5),

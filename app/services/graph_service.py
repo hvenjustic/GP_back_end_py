@@ -13,6 +13,7 @@ from app.repositories.crawl_job_repository import get_latest_job_by_root_url
 from app.schemas import CrawlRequest
 from app.services.crawl_service import build_crawl_params, normalize_url
 from app.services.langextract_client import LangExtractClient
+from app.services.neo4j_service import reset_site_graph, sync_graph_to_neo4j
 
 logger = logging.getLogger(__name__)
 MAX_LOG_CHARS = 4000
@@ -33,6 +34,12 @@ def build_graph_for_task(task_id: int, session_factory, settings: Settings) -> N
     if not root_url:
         db.close()
         raise ValueError(f"site_task url empty: {task_id}")
+
+    site_snapshot = {
+        "id": int(task.id),
+        "url": root_url,
+        "name": (task.site_name or task.name or "").strip(),
+    }
 
     job = get_latest_job_by_root_url(db, root_url)
     if not job:
@@ -59,6 +66,11 @@ def build_graph_for_task(task_id: int, session_factory, settings: Settings) -> N
     start_url = job.root_url if job.root_url in pages_by_url else pick_root_url(pages)
     if not start_url:
         raise ValueError("root_url not found in site_pages")
+
+    try:
+        reset_site_graph(settings, site_snapshot["id"])
+    except Exception:  # pylint: disable=broad-except
+        logger.exception("neo4j reset failed task_id=%s", task_id)
 
     graph_data = _load_graph_json(task.graph_json)
     prompt = _load_prompt(settings)
@@ -125,6 +137,10 @@ def build_graph_for_task(task_id: int, session_factory, settings: Settings) -> N
 
     duration_ms = int((time.monotonic() - start) * 1000)
     _finalize_graph(session_factory, task_id, graph_data, duration_ms)
+    try:
+        sync_graph_to_neo4j(settings, site_snapshot, graph_data)
+    except Exception:  # pylint: disable=broad-except
+        logger.exception("neo4j sync failed task_id=%s", task_id)
 
 
 def is_crawl_job_done(status: str | None) -> bool:
