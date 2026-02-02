@@ -17,6 +17,7 @@ from app.models import AgentMessage, AgentSession
 from app.services.agent_tools import ToolRegistry, build_default_registry
 
 logger = logging.getLogger(__name__)
+MAX_TRACE_TEXT_CHARS = 600
 
 
 def _patch_langchain_usage_metadata() -> None:
@@ -61,6 +62,22 @@ class AgentService:
             db = SessionLocal()
             assistant_message: AgentMessage | None = None
             session: AgentSession | None = None
+            trace_items: list[dict[str, Any]] = []
+            trace_cursor = 0
+
+            def _drain_trace_events() -> list[str]:
+                nonlocal trace_cursor
+                payloads: list[str] = []
+                while trace_cursor < len(trace_items):
+                    item = dict(trace_items[trace_cursor])
+                    if assistant_message:
+                        item["messageId"] = str(assistant_message.id)
+                    if session:
+                        item["sessionId"] = session.id
+                    payloads.append(_sse_event("trace", item))
+                    trace_cursor += 1
+                return payloads
+
             try:
                 session = self._get_or_create_session(db, session_id, message)
                 self._add_message(db, session.id, "user", message)
@@ -77,10 +94,33 @@ class AgentService:
                     "meta",
                     {"label": "session_id", "value": session.id},
                 )
+                trace_items.append(
+                    _build_trace_item(
+                        step="已接收用户消息，开始准备上下文",
+                        stage="prepare",
+                    )
+                )
+                for event in _drain_trace_events():
+                    yield event
 
                 content_parts: list[str] = []
 
-                prepared_messages = self._prepare_messages_for_stream(messages)
+                prepared_messages = self._prepare_messages_for_stream(
+                    messages,
+                    traces=trace_items,
+                )
+                for event in _drain_trace_events():
+                    yield event
+
+                trace_items.append(
+                    _build_trace_item(
+                        step="上下文准备完成，开始生成最终回复",
+                        stage="stream",
+                    )
+                )
+                for event in _drain_trace_events():
+                    yield event
+
                 stream = self._get_llm(streaming=True).stream(prepared_messages)
 
                 for chunk in stream:
@@ -98,8 +138,19 @@ class AgentService:
                     )
 
                 final_text = "".join(content_parts).strip()
+                trace_items.append(
+                    _build_trace_item(
+                        step="回复生成完成",
+                        stage="done",
+                    )
+                )
+                for event in _drain_trace_events():
+                    yield event
+
                 assistant_message.content = final_text
                 assistant_message.status = "DONE"
+                assistant_message.tool_name = "agent_trace"
+                assistant_message.tool_payload = {"trace": trace_items}
                 session.updated_at = datetime.utcnow()
                 db.commit()
 
@@ -108,15 +159,27 @@ class AgentService:
                     {
                         "messageId": str(assistant_message.id),
                         "sessionId": session.id,
+                        "trace": trace_items,
                     },
                 )
             except Exception as exc:  # pylint: disable=broad-except
                 logger.exception("agent stream failed")
                 error_text = f"Agent error: {exc}"
+                trace_items.append(
+                    _build_trace_item(
+                        step=f"发生错误：{exc}",
+                        stage="error",
+                        level="error",
+                    )
+                )
                 if assistant_message:
                     assistant_message.content = error_text
                     assistant_message.status = "FAILED"
+                    assistant_message.tool_name = "agent_trace"
+                    assistant_message.tool_payload = {"trace": trace_items}
                     db.commit()
+                    for event in _drain_trace_events():
+                        yield event
                     yield _sse_event(
                         "token",
                         {
@@ -130,6 +193,7 @@ class AgentService:
                         {
                             "messageId": str(assistant_message.id),
                             "sessionId": session.id if session else "",
+                            "trace": trace_items,
                         },
                     )
                 else:
@@ -204,14 +268,40 @@ class AgentService:
                 messages.append(AIMessage(content=content))
         return messages
 
-    def _prepare_messages_for_stream(self, messages: list[BaseMessage]) -> list[BaseMessage]:
+    def _prepare_messages_for_stream(
+        self,
+        messages: list[BaseMessage],
+        traces: list[dict[str, Any]] | None = None,
+    ) -> list[BaseMessage]:
+        trace_records = traces if isinstance(traces, list) else []
         enabled = {name.strip() for name in self.settings.agent_tools_enabled if name.strip()}
         if not (self.settings.agent_use_tools and enabled):
+            trace_records.append(
+                _build_trace_item(
+                    step="当前为纯对话模式（未启用工具调用）",
+                    stage="plan",
+                )
+            )
             return messages
 
         tools = self._registry.to_langchain_tools(enabled)
         if not tools:
+            trace_records.append(
+                _build_trace_item(
+                    step="配置了工具模式，但未找到可用工具，改为直接回答",
+                    stage="plan",
+                    level="warning",
+                )
+            )
             return messages
+
+        trace_records.append(
+            _build_trace_item(
+                step=f"已启用工具模式，可调用 {len(tools)} 个工具",
+                stage="plan",
+                payload={"tools": sorted(enabled)},
+            )
+        )
 
         llm = self._get_llm(streaming=False)
         llm_with_tools = llm.bind_tools(tools)
@@ -221,17 +311,82 @@ class AgentService:
         while tool_rounds < self.settings.agent_tool_max_rounds:
             response = llm_with_tools.invoke(working)
             if not isinstance(response, AIMessage):
+                trace_records.append(
+                    _build_trace_item(
+                        step="模型返回了非 AIMessage，停止工具规划",
+                        stage="plan",
+                        level="warning",
+                    )
+                )
                 break
+
+            planner_text = _preview_text(_chunk_to_text(response), MAX_TRACE_TEXT_CHARS)
+            if planner_text:
+                trace_records.append(
+                    _build_trace_item(
+                        step=planner_text,
+                        stage="plan",
+                    )
+                )
+
             tool_calls = _extract_tool_calls(response)
             if not tool_calls:
+                trace_records.append(
+                    _build_trace_item(
+                        step="未触发工具调用，进入最终回答阶段",
+                        stage="plan",
+                    )
+                )
                 break
 
             working.append(response)
-            for call in tool_calls:
-                result = self._call_tool_safely(call["name"], call["args"])
+            trace_records.append(
+                _build_trace_item(
+                    step=f"第 {tool_rounds + 1} 轮触发 {len(tool_calls)} 个工具调用",
+                    stage="tool",
+                )
+            )
+            for idx, call in enumerate(tool_calls, start=1):
+                tool_name = str(call.get("name") or "").strip() or "unknown_tool"
+                args = call.get("args") if isinstance(call.get("args"), dict) else {}
+                trace_records.append(
+                    _build_trace_item(
+                        step=f"执行工具：{tool_name}",
+                        stage="tool",
+                        payload={
+                            "round": tool_rounds + 1,
+                            "index": idx,
+                            "name": tool_name,
+                            "args_preview": _safe_json(args),
+                        },
+                    )
+                )
+                result = self._call_tool_safely(tool_name, args)
+                trace_records.append(
+                    _build_trace_item(
+                        step=f"工具执行完成：{tool_name}",
+                        stage="tool_result",
+                        payload={
+                            "round": tool_rounds + 1,
+                            "index": idx,
+                            "name": tool_name,
+                            "result_preview": _preview_text(result, MAX_TRACE_TEXT_CHARS),
+                        },
+                        level="error" if _is_tool_error(result) else "info",
+                    )
+                )
                 working.append(ToolMessage(content=result, tool_call_id=call["id"]))
 
             tool_rounds += 1
+
+        if tool_rounds >= self.settings.agent_tool_max_rounds:
+            trace_records.append(
+                _build_trace_item(
+                    step=f"达到工具轮次上限（{self.settings.agent_tool_max_rounds}）",
+                    stage="tool",
+                    level="warning",
+                )
+            )
 
         return working
 
@@ -346,6 +501,46 @@ def _chunk_to_text(chunk: Any) -> str:
                     parts.append(text)
         return "".join(parts)
     return str(content)
+
+
+def _preview_text(value: Any, limit: int = MAX_TRACE_TEXT_CHARS) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}...(truncated)"
+
+
+def _safe_json(value: Any, limit: int = MAX_TRACE_TEXT_CHARS) -> str:
+    try:
+        text = json.dumps(value, ensure_ascii=False, default=str)
+    except TypeError:
+        text = str(value)
+    return _preview_text(text, limit=limit)
+
+
+def _is_tool_error(result: str) -> bool:
+    return str(result).strip().lower().startswith("tool error:")
+
+
+def _build_trace_item(
+    step: str,
+    stage: str,
+    level: str = "info",
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    item = {
+        "step": _preview_text(step),
+        "stage": stage,
+        "level": level,
+        "time": datetime.utcnow().isoformat() + "Z",
+    }
+    if payload:
+        item["payload"] = payload
+    return item
 
 
 def _truncate_title(text: str, limit: int = 32) -> str:

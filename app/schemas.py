@@ -212,6 +212,8 @@ class AgentMessageResponse(BaseModel):
     role: str
     content: str | None = None
     status: str | None = None
+    tool_name: str | None = None
+    tool_payload: dict[str, Any] | None = None
     created_at: datetime | None = None
 
 

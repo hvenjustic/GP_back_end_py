@@ -74,6 +74,8 @@ def get_session_detail(session_id: str, db: Session) -> AgentSessionDetailRespon
                 role=item.role,
                 content=item.content,
                 status=item.status,
+                tool_name=item.tool_name,
+                tool_payload=item.tool_payload if isinstance(item.tool_payload, dict) else None,
                 created_at=item.created_at,
             )
             for item in messages
