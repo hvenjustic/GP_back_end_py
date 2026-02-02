@@ -12,35 +12,35 @@
 
 ## 实体类型（Entity Types）
 
-### 组织机构（Organization）
+### 一级类别：组织机构（Organization）
 - **Company**（公司）：生物技术公司、制药公司、医疗器械公司等
 - **Research Lab**（研究实验室）：独立研究机构
 - **University**（大学）：高等教育机构
 
-### 人物（Person）
+### 一级类别：人物（Person）
 - **Scientist**（科学家）：从事科研工作的人员
 - **Principal Investigator (PI)**（首席研究员）：领导研究项目的负责人
 - **Business Leader**（商业领袖）：企业高管、创始人等
 
-### 产品/服务（Product / Service）
+### 一级类别：产品/服务（Product / Service）
 - **Equipment**（设备）：实验设备、生产设备
 - **Reagent**（试剂）：化学试剂、生物试剂
 - **Cell Line**（细胞系）：用于研究或生产的细胞株
 - **CRO Service**（合同研究组织服务）：外包研究服务
 - **Software**（软件）：生物信息学软件、分析工具
 
-### 研究产出/主题（Research Artifact / Topic）
+### 一级类别：研究产出/主题（Research Artifact / Topic）
 - **Research Paper**（研究论文）：已发表的学术论文
 - **Patent**（专利）：技术专利
 - **Clinical Trial**（临床试验）：药物或医疗器械的临床试验
 - **Research Topic**（研究主题）：研究领域或主题
 
-### 工艺实体（Process Entity）
+### 一级类别：工艺实体（Process Entity）
 - **Fermentation Process**（发酵工艺）：生物发酵相关流程
 - **Purification Method**（纯化方法）：产物纯化技术
 - **Quality Control Parameter**（质量控制参数）：质量控制指标
 
-### 事件（Event）
+### 一级类别：事件（Event）
 - **Funding Round**（融资轮次）：融资事件
 - **M&A Event**（并购事件）：企业并购
 - **New Product Launch**（新产品发布）：产品发布会或上市
@@ -99,7 +99,11 @@
 1. **准确识别**：根据上述类型列表识别实体
 2. **标准命名**：使用实体的正式名称（如公司全称、人名全称）
 3. **简短描述**：为每个实体提供 1-2 句简洁描述
-4. **补充信息**：如果文本中提供，记录以下额外信息：
+4. **类型分层**：
+   - 一级类别填写 `type_level_1`（例如：`Organization`）
+   - 二级类别填写 `type_level_2`（例如：`Company`）
+   - `type` 保持为二级类别，便于图谱兼容（例如：`Company`）
+5. **补充信息**：如果文本中提供，记录以下额外信息：
    - 公司/大学：国家或地区
    - 科学家：职位或角色
    - 事件：日期（格式：YYYY-MM-DD）
@@ -175,4 +179,3 @@
 ---
 
 **记住**：langextract 会自动处理输出的 JSON 结构，你只需要专注于识别和抽取正确的实体和关系。
-

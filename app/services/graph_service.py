@@ -18,6 +18,98 @@ from app.services.neo4j_service import reset_site_graph, sync_graph_to_neo4j
 logger = logging.getLogger(__name__)
 MAX_LOG_CHARS = 4000
 
+ENTITY_TYPE_LEVEL_1_ALIASES = {
+    "organization": "Organization",
+    "组织机构": "Organization",
+    "person": "Person",
+    "人物": "Person",
+    "product / service": "Product / Service",
+    "product/service": "Product / Service",
+    "产品/服务": "Product / Service",
+    "research artifact / topic": "Research Artifact / Topic",
+    "research artifact/topic": "Research Artifact / Topic",
+    "研究产出/主题": "Research Artifact / Topic",
+    "process entity": "Process Entity",
+    "工艺实体": "Process Entity",
+    "event": "Event",
+    "事件": "Event",
+}
+
+ENTITY_TYPE_LEVEL_2_ALIASES = {
+    "company": "Company",
+    "公司": "Company",
+    "research lab": "Research Lab",
+    "研究实验室": "Research Lab",
+    "university": "University",
+    "大学": "University",
+    "scientist": "Scientist",
+    "科学家": "Scientist",
+    "principal investigator (pi)": "Principal Investigator (PI)",
+    "principal investigator": "Principal Investigator (PI)",
+    "pi": "Principal Investigator (PI)",
+    "首席研究员": "Principal Investigator (PI)",
+    "business leader": "Business Leader",
+    "商业领袖": "Business Leader",
+    "equipment": "Equipment",
+    "设备": "Equipment",
+    "reagent": "Reagent",
+    "试剂": "Reagent",
+    "cell line": "Cell Line",
+    "细胞系": "Cell Line",
+    "cro service": "CRO Service",
+    "合同研究组织服务": "CRO Service",
+    "software": "Software",
+    "软件": "Software",
+    "research paper": "Research Paper",
+    "研究论文": "Research Paper",
+    "patent": "Patent",
+    "专利": "Patent",
+    "clinical trial": "Clinical Trial",
+    "临床试验": "Clinical Trial",
+    "research topic": "Research Topic",
+    "研究主题": "Research Topic",
+    "fermentation process": "Fermentation Process",
+    "发酵工艺": "Fermentation Process",
+    "purification method": "Purification Method",
+    "纯化方法": "Purification Method",
+    "quality control parameter": "Quality Control Parameter",
+    "质量控制参数": "Quality Control Parameter",
+    "funding round": "Funding Round",
+    "融资轮次": "Funding Round",
+    "m&a event": "M&A Event",
+    "m and a event": "M&A Event",
+    "并购事件": "M&A Event",
+    "new product launch": "New Product Launch",
+    "新产品发布": "New Product Launch",
+    "research breakthrough": "Research Breakthrough",
+    "研究突破": "Research Breakthrough",
+}
+
+ENTITY_TYPE_LEVEL_2_TO_LEVEL_1 = {
+    "Company": "Organization",
+    "Research Lab": "Organization",
+    "University": "Organization",
+    "Scientist": "Person",
+    "Principal Investigator (PI)": "Person",
+    "Business Leader": "Person",
+    "Equipment": "Product / Service",
+    "Reagent": "Product / Service",
+    "Cell Line": "Product / Service",
+    "CRO Service": "Product / Service",
+    "Software": "Product / Service",
+    "Research Paper": "Research Artifact / Topic",
+    "Patent": "Research Artifact / Topic",
+    "Clinical Trial": "Research Artifact / Topic",
+    "Research Topic": "Research Artifact / Topic",
+    "Fermentation Process": "Process Entity",
+    "Purification Method": "Process Entity",
+    "Quality Control Parameter": "Process Entity",
+    "Funding Round": "Event",
+    "M&A Event": "Event",
+    "New Product Launch": "Event",
+    "Research Breakthrough": "Event",
+}
+
 DEFAULT_PROMPT = (
     "你是信息抽取系统。你的任务是从 Markdown 文本中抽取可用于构建知识图谱的结构化信息。"
 )
@@ -236,41 +328,49 @@ def _extract_graph_items(doc: Any) -> tuple[list[dict[str, Any]], list[dict[str,
     for idx, extraction in enumerate(getattr(doc, "extractions", []) or []):
         ex_class = getattr(extraction, "extraction_class", None)
         attrs = getattr(extraction, "attributes", {}) or {}
-        
+
         # 获取 extraction_text 并记录类型（用于调试）
         extraction_text = getattr(extraction, "extraction_text", None)
-        
+
         # 调试日志：记录 extraction_text 的类型
         if not isinstance(extraction_text, (str, int, float, type(None))):
             logger.warning(
                 "Unexpected extraction_text type for extraction #%d: type=%s value=%s",
                 idx,
                 type(extraction_text).__name__,
-                extraction_text
+                extraction_text,
             )
-        
+
         extraction_text_str = _normalize_extraction_text(extraction_text, attrs, ex_class)
-        
+
         if ex_class == "entity":
             name = _string_value(attrs.get("name")) or extraction_text_str
-            
+            type_level_1, type_level_2, entity_type = _resolve_entity_type_levels(attrs)
+
             # 提取额外字段（平铺结构）
             extra = {}
-            for key in ("country", "stage", "role", "date"):
+            for key in ("country", "stage", "phase", "role", "date"):
                 value = attrs.get(key)
                 if value and not isinstance(value, dict):  # 只接受简单类型
                     extra[key] = _string_value(value)
                 elif isinstance(value, dict):
                     logger.warning(
                         "Nested dict found in entity attributes key=%s, converting to string",
-                        key
+                        key,
                     )
                     extra[key] = json.dumps(value, ensure_ascii=False)
-            
+
+            if type_level_1:
+                extra["type_level_1"] = type_level_1
+            if type_level_2:
+                extra["type_level_2"] = type_level_2
+
             entities.append(
                 {
                     "name": name,
-                    "type": _string_value(attrs.get("type")),
+                    "type": entity_type,
+                    "type_level_1": type_level_1,
+                    "type_level_2": type_level_2,
                     "description": _string_value(attrs.get("description")),
                     "extra": extra,
                 }
@@ -302,6 +402,89 @@ def _string_value(value: Any) -> str:
     return str(value).strip()
 
 
+def _normalize_type_key(value: Any) -> str:
+    text = _string_value(value).lower()
+    if not text:
+        return ""
+    text = text.replace("_", " ").replace("-", " ")
+    return " ".join(text.split())
+
+
+def _resolve_alias(value: Any, alias_map: dict[str, str]) -> tuple[str, bool]:
+    key = _normalize_type_key(value)
+    if not key:
+        return "", False
+    mapped = alias_map.get(key)
+    if mapped:
+        return mapped, True
+    return _string_value(value), False
+
+
+def _pick_first_alias_value(
+    attrs: dict[str, Any],
+    keys: tuple[str, ...],
+    alias_map: dict[str, str],
+) -> str:
+    for key in keys:
+        value = attrs.get(key)
+        if value is None or isinstance(value, (dict, list)):
+            continue
+        resolved, _matched = _resolve_alias(value, alias_map)
+        if resolved:
+            return resolved
+    return ""
+
+
+def _resolve_entity_type_levels(attrs: dict[str, Any]) -> tuple[str, str, str]:
+    type_level_1 = _pick_first_alias_value(
+        attrs,
+        (
+            "type_level_1",
+            "entity_type_level_1",
+            "category_level_1",
+            "primary_type",
+            "category",
+            "group",
+        ),
+        ENTITY_TYPE_LEVEL_1_ALIASES,
+    )
+    type_level_2 = _pick_first_alias_value(
+        attrs,
+        (
+            "type_level_2",
+            "entity_type_level_2",
+            "category_level_2",
+            "secondary_type",
+            "subtype",
+        ),
+        ENTITY_TYPE_LEVEL_2_ALIASES,
+    )
+
+    raw_type = _string_value(attrs.get("type"))
+    raw_type_as_level_1, raw_type_is_level_1 = _resolve_alias(
+        raw_type, ENTITY_TYPE_LEVEL_1_ALIASES
+    )
+    raw_type_as_level_2, raw_type_is_level_2 = _resolve_alias(
+        raw_type, ENTITY_TYPE_LEVEL_2_ALIASES
+    )
+
+    if not type_level_2 and raw_type:
+        if raw_type_is_level_2:
+            type_level_2 = raw_type_as_level_2
+        elif not raw_type_is_level_1:
+            # 兼容历史数据：未知 type 仍优先当作二级类型。
+            type_level_2 = raw_type
+
+    if not type_level_1:
+        if raw_type_is_level_1:
+            type_level_1 = raw_type_as_level_1
+        elif type_level_2:
+            type_level_1 = ENTITY_TYPE_LEVEL_2_TO_LEVEL_1.get(type_level_2, "")
+
+    entity_type = type_level_2 or raw_type or type_level_1
+    return type_level_1, type_level_2, entity_type
+
+
 def _normalize_extraction_text(extraction_text: Any, attrs: dict[str, Any], ex_class: str | None) -> str:
     """
     将 extraction_text 规范化为字符串类型。
@@ -318,12 +501,12 @@ def _normalize_extraction_text(extraction_text: Any, attrs: dict[str, Any], ex_c
     # 如果已经是字符串、整数或浮点数，直接转换
     if isinstance(extraction_text, (str, int, float)):
         return str(extraction_text).strip()
-    
+
     # 如果是字典类型（错误格式），尝试提取有用信息
     if isinstance(extraction_text, dict):
         logger.warning(
             "extraction_text is dict (should be string): %s, attempting to fix",
-            extraction_text
+            extraction_text,
         )
         # 尝试从字典中提取文本
         for key in ("text", "value", "content", "name"):
@@ -334,18 +517,18 @@ def _normalize_extraction_text(extraction_text: Any, attrs: dict[str, Any], ex_c
             return json.dumps(extraction_text, ensure_ascii=False)
         except Exception:
             pass
-    
+
     # 如果是列表类型（错误格式）
     if isinstance(extraction_text, list):
         logger.warning(
             "extraction_text is list (should be string): %s, attempting to fix",
-            extraction_text
+            extraction_text,
         )
         # 取第一个非空元素
         for item in extraction_text:
             if item:
                 return str(item).strip()
-    
+
     # 如果是 None 或其他类型，根据 extraction_class 生成备用值
     if ex_class == "entity":
         name = _string_value(attrs.get("name"))
@@ -357,7 +540,7 @@ def _normalize_extraction_text(extraction_text: Any, attrs: dict[str, Any], ex_c
         target = _string_value(attrs.get("target"))
         if source and target:
             return f"{source} {relation_type} {target}".strip()
-    
+
     # 最后的备用方案
     logger.warning("extraction_text is invalid, using empty string as fallback")
     return ""

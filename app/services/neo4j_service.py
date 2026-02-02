@@ -149,7 +149,11 @@ def _normalize_entities(raw: Any) -> list[dict[str, Any]]:
         name = str(ent.get("name") or "").strip()
         if not name:
             continue
+        type_level_1 = str(ent.get("type_level_1") or "").strip()
+        type_level_2 = str(ent.get("type_level_2") or "").strip()
         ent_type = str(ent.get("type") or "").strip()
+        if not ent_type:
+            ent_type = type_level_2 or type_level_1
         description = str(ent.get("description") or "").strip()
         extra_raw = ent.get("extra")
         extra: dict[str, Any] = {}
@@ -160,6 +164,10 @@ def _normalize_entities(raw: Any) -> list[dict[str, Any]]:
                 text = str(value).strip()
                 if text:
                     extra[str(key)] = text
+        if type_level_1 and "type_level_1" not in extra:
+            extra["type_level_1"] = type_level_1
+        if type_level_2 and "type_level_2" not in extra:
+            extra["type_level_2"] = type_level_2
         items.append(
             {
                 "name": name,

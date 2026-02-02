@@ -30,6 +30,8 @@ EXAMPLES = [
                 attributes={
                     "name": "Acme Bio Inc.",
                     "type": "Company",
+                    "type_level_1": "Organization",
+                    "type_level_2": "Company",
                     "description": "A biotech company supplying research reagents.",
                     "country": "USA",  # 平铺：不再使用嵌套的 extra 字典
                 },
@@ -40,6 +42,8 @@ EXAMPLES = [
                 attributes={
                     "name": "Example University",
                     "type": "University",
+                    "type_level_1": "Organization",
+                    "type_level_2": "University",
                     "description": "A university conducting biotechnology research.",
                     "country": "USA",  # 平铺
                 },
@@ -50,6 +54,8 @@ EXAMPLES = [
                 attributes={
                     "name": "fermentation process",
                     "type": "Fermentation Process",
+                    "type_level_1": "Process Entity",
+                    "type_level_2": "Fermentation Process",
                     "description": "A fermentation process used in biotech research.",
                 },
             ),
@@ -59,6 +65,8 @@ EXAMPLES = [
                 attributes={
                     "name": "ReagentX",
                     "type": "Reagent",
+                    "type_level_1": "Product / Service",
+                    "type_level_2": "Reagent",
                     "description": "A reagent supplied for laboratory research.",
                 },
             ),
@@ -68,6 +76,8 @@ EXAMPLES = [
                 attributes={
                     "name": "Jane Doe",
                     "type": "Scientist",
+                    "type_level_1": "Person",
+                    "type_level_2": "Scientist",
                     "description": "A scientist at Example University.",
                     "role": "Scientist",  # 平铺
                 },
@@ -78,6 +88,8 @@ EXAMPLES = [
                 attributes={
                     "name": "Fermentation Breakthrough",
                     "type": "Research Paper",
+                    "type_level_1": "Research Artifact / Topic",
+                    "type_level_2": "Research Paper",
                     "description": "A research paper published by Example University.",
                 },
             ),
@@ -124,6 +136,8 @@ EXAMPLES = [
                 attributes={
                     "name": "Cell Culture Technology",
                     "type": "Patent",
+                    "type_level_1": "Research Artifact / Topic",
+                    "type_level_2": "Patent",
                     "description": "A patent on cell culture technology.",
                 },
             ),
@@ -153,6 +167,8 @@ EXAMPLES = [
                 attributes={
                     "name": "BioReactor",
                     "type": "Equipment",
+                    "type_level_1": "Product / Service",
+                    "type_level_2": "Equipment",
                     "description": "A new bioreactor product.",
                 },
             ),
