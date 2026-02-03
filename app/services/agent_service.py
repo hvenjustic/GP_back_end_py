@@ -105,12 +105,24 @@ class AgentService:
 
                 content_parts: list[str] = []
 
-                prepared_messages = self._prepare_messages_for_stream(
-                    messages,
-                    traces=trace_items,
-                )
-                for event in _drain_trace_events():
-                    yield event
+                # Use a generator to execute tool loop so we can yield trace events in real-time
+                tool_loop_gen = self._execute_tool_loop(messages, trace_items)
+                prepared_messages = []
+                while True:
+                    try:
+                        trace_item = next(tool_loop_gen)
+                        # Emit trace event immediately
+                        item = dict(trace_item)
+                        if assistant_message:
+                            item["messageId"] = str(assistant_message.id)
+                        if session:
+                            item["sessionId"] = session.id
+                        yield _sse_event("trace", item)
+                        # Advance cursor so _drain_trace_events doesn't re-emit this
+                        trace_cursor += 1
+                    except StopIteration as e:
+                        prepared_messages = e.value
+                        break
 
                 trace_items.append(
                     _build_trace_item(
@@ -268,40 +280,40 @@ class AgentService:
                 messages.append(AIMessage(content=content))
         return messages
 
-    def _prepare_messages_for_stream(
+    def _execute_tool_loop(
         self,
         messages: list[BaseMessage],
         traces: list[dict[str, Any]] | None = None,
-    ) -> list[BaseMessage]:
+    ) -> Iterator[dict[str, Any]]:  # Generator that yields trace items and returns final messages
         trace_records = traces if isinstance(traces, list) else []
         enabled = {name.strip() for name in self.settings.agent_tools_enabled if name.strip()}
         if not (self.settings.agent_use_tools and enabled):
-            trace_records.append(
-                _build_trace_item(
-                    step="当前为纯对话模式（未启用工具调用）",
-                    stage="plan",
-                )
+            item = _build_trace_item(
+                step="当前为纯对话模式（未启用工具调用）",
+                stage="plan",
             )
+            trace_records.append(item)
+            yield item
             return messages
 
         tools = self._registry.to_langchain_tools(enabled)
         if not tools:
-            trace_records.append(
-                _build_trace_item(
-                    step="配置了工具模式，但未找到可用工具，改为直接回答",
-                    stage="plan",
-                    level="warning",
-                )
+            item = _build_trace_item(
+                step="配置了工具模式，但未找到可用工具，改为直接回答",
+                stage="plan",
+                level="warning",
             )
+            trace_records.append(item)
+            yield item
             return messages
 
-        trace_records.append(
-            _build_trace_item(
-                step=f"已启用工具模式，可调用 {len(tools)} 个工具",
-                stage="plan",
-                payload={"tools": sorted(enabled)},
-            )
+        item = _build_trace_item(
+            step=f"已启用工具模式，可调用 {len(tools)} 个工具",
+            stage="plan",
+            payload={"tools": sorted(enabled)},
         )
+        trace_records.append(item)
+        yield item
 
         llm = self._get_llm(streaming=False)
         llm_with_tools = llm.bind_tools(tools)
@@ -309,84 +321,91 @@ class AgentService:
         working = list(messages)
 
         while tool_rounds < self.settings.agent_tool_max_rounds:
+            # Note: invoke() is synchronous, so planning time will still be blocking until we get the response.
+            # To fix planning delay, we'd need to stream the planning step too.
             response = llm_with_tools.invoke(working)
             if not isinstance(response, AIMessage):
-                trace_records.append(
-                    _build_trace_item(
-                        step="模型返回了非 AIMessage，停止工具规划",
-                        stage="plan",
-                        level="warning",
-                    )
+                item = _build_trace_item(
+                    step="模型返回了非 AIMessage，停止工具规划",
+                    stage="plan",
+                    level="warning",
                 )
+                trace_records.append(item)
+                yield item
                 break
 
             planner_text = _preview_text(_chunk_to_text(response), MAX_TRACE_TEXT_CHARS)
             if planner_text:
-                trace_records.append(
-                    _build_trace_item(
-                        step=planner_text,
-                        stage="plan",
-                    )
+                item = _build_trace_item(
+                    step=planner_text,
+                    stage="plan",
                 )
+                trace_records.append(item)
+                yield item
 
             tool_calls = _extract_tool_calls(response)
             if not tool_calls:
-                trace_records.append(
-                    _build_trace_item(
-                        step="未触发工具调用，进入最终回答阶段",
-                        stage="plan",
-                    )
+                item = _build_trace_item(
+                    step="未触发工具调用，进入最终回答阶段",
+                    stage="plan",
                 )
+                trace_records.append(item)
+                yield item
                 break
 
             working.append(response)
-            trace_records.append(
-                _build_trace_item(
-                    step=f"第 {tool_rounds + 1} 轮触发 {len(tool_calls)} 个工具调用",
-                    stage="tool",
-                )
+            item = _build_trace_item(
+                step=f"第 {tool_rounds + 1} 轮触发 {len(tool_calls)} 个工具调用",
+                stage="tool",
             )
+            trace_records.append(item)
+            yield item
+
             for idx, call in enumerate(tool_calls, start=1):
                 tool_name = str(call.get("name") or "").strip() or "unknown_tool"
                 args = call.get("args") if isinstance(call.get("args"), dict) else {}
-                trace_records.append(
-                    _build_trace_item(
-                        step=f"执行工具：{tool_name}",
-                        stage="tool",
-                        payload={
-                            "round": tool_rounds + 1,
-                            "index": idx,
-                            "name": tool_name,
-                            "args_preview": _safe_json(args),
-                        },
-                    )
+                
+                item = _build_trace_item(
+                    step=f"执行工具：{tool_name}",
+                    stage="tool",
+                    payload={
+                        "round": tool_rounds + 1,
+                        "index": idx,
+                        "name": tool_name,
+                        "args_preview": _safe_json(args),
+                    },
                 )
+                trace_records.append(item)
+                yield item
+
                 result = self._call_tool_safely(tool_name, args)
-                trace_records.append(
-                    _build_trace_item(
-                        step=f"工具执行完成：{tool_name}",
-                        stage="tool_result",
-                        payload={
-                            "round": tool_rounds + 1,
-                            "index": idx,
-                            "name": tool_name,
-                            "result_preview": _preview_text(result, MAX_TRACE_TEXT_CHARS),
-                        },
-                        level="error" if _is_tool_error(result) else "info",
-                    )
+                
+                item = _build_trace_item(
+                    step=f"工具执行完成：{tool_name}",
+                    stage="tool_result",
+                    payload={
+                        "round": tool_rounds + 1,
+                        "index": idx,
+                        "name": tool_name,
+                        "result_preview": _preview_text(result, MAX_TRACE_TEXT_CHARS),
+                    },
+                    level="error" if _is_tool_error(result) else "info",
                 )
+                trace_records.append(item)
+                yield item
+
                 working.append(ToolMessage(content=result, tool_call_id=call["id"]))
 
             tool_rounds += 1
 
         if tool_rounds >= self.settings.agent_tool_max_rounds:
-            trace_records.append(
-                _build_trace_item(
-                    step=f"达到工具轮次上限（{self.settings.agent_tool_max_rounds}）",
-                    stage="tool",
-                    level="warning",
-                )
+            item = _build_trace_item(
+                step=f"达到工具轮次上限（{self.settings.agent_tool_max_rounds}）",
+                stage="tool",
+                level="warning",
             )
+            trace_records.append(item)
+            yield item
 
         return working
 
