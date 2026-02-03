@@ -2,13 +2,17 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.handlers import agent, api, crawl, graph
+from app.handlers import agent, api, crawl, graph, embedding
 from app.schemas import (
     AgentSessionDetailResponse,
     AgentSessionDeleteResponse,
     AgentSessionResponse,
     ClearQueueResponse,
     CrawlResponse,
+    EmbeddingComputeResponse,
+    EmbeddingCoord3DResponse,
+    EmbeddingListResponse,
+    EmbeddingStatusResponse,
     GraphBuildResponse,
     GraphLocateResponse,
     GraphVisualResponse,
@@ -186,3 +190,38 @@ agent_group.add_api_route(
     response_model=AgentSessionDeleteResponse,
 )
 router.include_router(agent_group)
+
+# Embedding routes
+embedding_group = APIRouter(prefix="/api/embeddings")
+embedding_group.add_api_route(
+    "/compute",
+    embedding.compute_embeddings,
+    methods=["POST"],
+    response_model=EmbeddingComputeResponse,
+    status_code=202,
+)
+embedding_group.add_api_route(
+    "/compute/sync",
+    embedding.compute_embeddings_sync,
+    methods=["POST"],
+    response_model=EmbeddingListResponse,
+)
+embedding_group.add_api_route(
+    "/status",
+    embedding.get_embedding_status,
+    methods=["GET"],
+    response_model=EmbeddingStatusResponse,
+)
+embedding_group.add_api_route(
+    "",
+    embedding.list_embeddings,
+    methods=["GET"],
+    response_model=EmbeddingListResponse,
+)
+embedding_group.add_api_route(
+    "/coords3d",
+    embedding.get_3d_coordinates,
+    methods=["GET"],
+    response_model=EmbeddingCoord3DResponse,
+)
+router.include_router(embedding_group)

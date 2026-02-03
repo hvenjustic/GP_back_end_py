@@ -225,3 +225,62 @@ class AgentSessionDetailResponse(BaseModel):
 class AgentSessionDeleteResponse(BaseModel):
     session_id: str
     deleted: bool
+
+
+# ============ Embedding Schemas ============
+
+class EmbeddingComputeRequest(BaseModel):
+    """图嵌入计算请求"""
+    embedding_method: str = "gnn"  # "gnn" or "node2vec"
+    reduction_method: str = "umap"  # "umap" or "tsne"
+    embedding_dim: int = 128
+    use_gpu: bool = True
+    save_node_embeddings: bool = False
+    site_ids: list[int] | None = None  # None表示处理所有
+
+
+class EmbeddingComputeResponse(BaseModel):
+    """异步嵌入计算响应"""
+    status: str
+    message: str
+
+
+class EmbeddingStatusResponse(BaseModel):
+    """嵌入计算状态响应"""
+    is_running: bool
+    progress: int
+    total: int
+    message: str
+    error: str | None = None
+
+
+class EmbeddingResultItem(BaseModel):
+    """单个嵌入结果项"""
+    site_id: int
+    site_name: str | None = None
+    site_url: str | None = None
+    embedding: list[float] | None = None
+    coord_3d: list[float] | None = None
+    node_count: int | None = None
+
+
+class EmbeddingListResponse(BaseModel):
+    """嵌入列表响应"""
+    items: list[EmbeddingResultItem]
+    total: int
+
+
+class EmbeddingCoord3DItem(BaseModel):
+    """3D坐标项"""
+    site_id: int
+    site_name: str | None = None
+    site_url: str | None = None
+    x: float
+    y: float
+    z: float
+
+
+class EmbeddingCoord3DResponse(BaseModel):
+    """3D坐标响应"""
+    items: list[dict[str, Any]]
+    total: int
