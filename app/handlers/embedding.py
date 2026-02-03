@@ -12,9 +12,11 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import HTTPException, BackgroundTasks
+from fastapi import HTTPException, BackgroundTasks, Depends
+from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.db import get_db, SessionLocal
 from app.schemas import (
     EmbeddingComputeRequest,
     EmbeddingComputeResponse,
@@ -62,6 +64,9 @@ def _run_embedding_task(
     global _embedding_task_status
     settings = get_settings()
     
+    # 为后台任务创建独立的数据库会话
+    db = SessionLocal()
+    
     try:
         _embedding_task_status["is_running"] = True
         _embedding_task_status["message"] = "正在获取图谱数据..."
@@ -72,10 +77,12 @@ def _run_embedding_task(
         
         results = embedding_service.compute_all_embeddings(
             settings=settings,
+            db=db,
             embedding_method=embedding_method,
             reduction_method=reduction_method,
             embedding_dim=embedding_dim,
             use_gpu=use_gpu,
+            save_to_db=True,
             save_to_neo4j=True,
             save_node_embeddings=save_node_embeddings,
             site_ids=site_ids,
@@ -90,6 +97,7 @@ def _run_embedding_task(
         _embedding_task_status["error"] = str(e)
         _embedding_task_status["message"] = f"任务失败: {str(e)}"
     finally:
+        db.close()
         _embedding_task_status["is_running"] = False
 
 
@@ -138,6 +146,7 @@ async def compute_embeddings(
 
 async def compute_embeddings_sync(
     request: EmbeddingComputeRequest,
+    db: Session = Depends(get_db),
 ) -> EmbeddingListResponse:
     """
     同步计算图谱嵌入向量和3D坐标（等待完成后返回结果）
@@ -155,10 +164,12 @@ async def compute_embeddings_sync(
     try:
         results = embedding_service.compute_all_embeddings(
             settings=settings,
+            db=db,
             embedding_method=request.embedding_method,
             reduction_method=request.reduction_method,
             embedding_dim=request.embedding_dim,
             use_gpu=request.use_gpu,
+            save_to_db=True,
             save_to_neo4j=True,
             save_node_embeddings=request.save_node_embeddings,
             site_ids=request.site_ids,
@@ -203,20 +214,16 @@ async def get_embedding_status() -> EmbeddingStatusResponse:
 
 async def list_embeddings(
     site_ids: Optional[str] = None,
+    db: Session = Depends(get_db),
 ) -> EmbeddingListResponse:
     """
-    获取已计算的嵌入数据列表
+    获取已计算的嵌入数据列表（从MySQL读取）
     
     GET /api/embeddings
     
     Args:
         site_ids: 可选，逗号分隔的site_id列表
     """
-    settings = get_settings()
-    
-    if not neo4j_enabled(settings):
-        raise HTTPException(status_code=503, detail="Neo4j未配置或不可用")
-    
     # 解析site_ids参数
     parsed_site_ids = None
     if site_ids:
@@ -226,7 +233,8 @@ async def list_embeddings(
             raise HTTPException(status_code=400, detail="site_ids格式错误，应为逗号分隔的整数")
     
     try:
-        data = embedding_service.get_embeddings_from_neo4j(settings, parsed_site_ids)
+        # 优先从MySQL获取
+        data = embedding_service.get_embeddings_from_mysql(db, parsed_site_ids)
         
         items = [
             EmbeddingResultItem(
@@ -251,20 +259,16 @@ async def list_embeddings(
 
 async def get_3d_coordinates(
     site_ids: Optional[str] = None,
+    db: Session = Depends(get_db),
 ) -> EmbeddingCoord3DResponse:
     """
-    获取3D坐标数据（用于可视化）
+    获取3D坐标数据（用于可视化，从MySQL读取）
     
     GET /api/embeddings/coords3d
     
     Args:
         site_ids: 可选，逗号分隔的site_id列表
     """
-    settings = get_settings()
-    
-    if not neo4j_enabled(settings):
-        raise HTTPException(status_code=503, detail="Neo4j未配置或不可用")
-    
     # 解析site_ids参数
     parsed_site_ids = None
     if site_ids:
@@ -274,7 +278,8 @@ async def get_3d_coordinates(
             raise HTTPException(status_code=400, detail="site_ids格式错误，应为逗号分隔的整数")
     
     try:
-        data = embedding_service.get_embeddings_from_neo4j(settings, parsed_site_ids)
+        # 从MySQL获取
+        data = embedding_service.get_embeddings_from_mysql(db, parsed_site_ids)
         
         coords = []
         for d in data:

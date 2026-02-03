@@ -6,7 +6,7 @@
 2. 使用Node2Vec/Graph2Vec进行图嵌入
 3. 使用PyTorch MPS后端(Apple M系列芯片)进行GPU加速
 4. 使用UMAP进行降维到3D
-5. 将嵌入向量和3D坐标存储回Neo4j
+5. 将嵌入向量和3D坐标存储到MySQL(site_tasks表)和Neo4j
 """
 
 from __future__ import annotations
@@ -14,13 +14,16 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 from dataclasses import dataclass
+from datetime import datetime
 import json
 import hashlib
 
 import numpy as np
 from neo4j import GraphDatabase
+from sqlalchemy.orm import Session
 
 from app.config import Settings
+from app.models import SiteTask
 
 logger = logging.getLogger(__name__)
 
@@ -546,6 +549,31 @@ def reduce_to_3d_tsne(
     return coords_3d.astype(np.float32)
 
 
+def save_embeddings_to_mysql(
+    db: Session,
+    results: list[EmbeddingResult],
+) -> None:
+    """
+    将嵌入向量和3D坐标保存到MySQL的site_tasks表
+    
+    Args:
+        db: 数据库会话
+        results: 嵌入结果列表
+    """
+    for result in results:
+        site_task = db.query(SiteTask).filter(SiteTask.id == result.site_id).first()
+        if site_task:
+            site_task.embedding = result.high_dim_embedding
+            site_task.coord_3d = result.coord_3d
+            site_task.embedding_updated_at = datetime.utcnow()
+            site_task.updated_at = datetime.utcnow()
+            logger.info(f"Saved embedding to MySQL for site_task {result.site_id}")
+        else:
+            logger.warning(f"SiteTask {result.site_id} not found in MySQL")
+    
+    db.commit()
+
+
 def save_embeddings_to_neo4j(
     settings: Settings,
     results: list[EmbeddingResult],
@@ -575,7 +603,7 @@ def save_embeddings_to_neo4j(
                     embedding=result.high_dim_embedding,
                     coord_3d=result.coord_3d,
                 )
-                logger.info(f"Saved embedding for site {result.site_id}")
+                logger.info(f"Saved embedding to Neo4j for site {result.site_id}")
                 
                 # 可选：保存节点级嵌入
                 if save_node_embeddings and result.node_embeddings:
@@ -599,10 +627,12 @@ def save_embeddings_to_neo4j(
 
 def compute_all_embeddings(
     settings: Settings,
+    db: Optional[Session] = None,
     embedding_method: str = "gnn",  # "gnn" or "node2vec"
     reduction_method: str = "umap",  # "umap" or "tsne"
     embedding_dim: int = 128,
     use_gpu: bool = True,
+    save_to_db: bool = True,
     save_to_neo4j: bool = True,
     save_node_embeddings: bool = False,
     site_ids: Optional[list[int]] = None,
@@ -612,10 +642,12 @@ def compute_all_embeddings(
     
     Args:
         settings: 配置
+        db: 数据库会话（用于保存到MySQL）
         embedding_method: 嵌入方法 ("gnn" 或 "node2vec")
         reduction_method: 降维方法 ("umap" 或 "tsne")
         embedding_dim: 嵌入维度
         use_gpu: 是否使用GPU加速
+        save_to_db: 是否保存到MySQL
         save_to_neo4j: 是否保存到Neo4j
         save_node_embeddings: 是否保存节点级嵌入
         site_ids: 要处理的site_id列表，None表示处理所有
@@ -707,12 +739,50 @@ def compute_all_embeddings(
         )
         results.append(result)
     
+    # 保存到MySQL
+    if save_to_db and db:
+        logger.info("Saving embeddings to MySQL (site_tasks table)")
+        save_embeddings_to_mysql(db, results)
+    
     # 保存到Neo4j
     if save_to_neo4j:
         logger.info("Saving embeddings to Neo4j")
         save_embeddings_to_neo4j(settings, results, save_node_embeddings=save_node_embeddings)
     
     logger.info(f"Completed embedding computation for {len(results)} graphs")
+    return results
+
+
+def get_embeddings_from_mysql(
+    db: Session,
+    site_ids: Optional[list[int]] = None,
+) -> list[dict[str, Any]]:
+    """
+    从MySQL的site_tasks表获取已保存的嵌入向量和3D坐标
+    
+    Args:
+        db: 数据库会话
+        site_ids: 要获取的site_id列表，None表示获取所有
+        
+    Returns:
+        list[dict]: 嵌入数据列表
+    """
+    query = db.query(SiteTask).filter(SiteTask.embedding.isnot(None))
+    
+    if site_ids:
+        query = query.filter(SiteTask.id.in_(site_ids))
+    
+    results = []
+    for task in query.all():
+        results.append({
+            "site_id": task.id,
+            "site_name": task.site_name,
+            "site_url": task.url,
+            "embedding": task.embedding,
+            "coord_3d": task.coord_3d,
+            "updated_at": task.embedding_updated_at,
+        })
+    
     return results
 
 

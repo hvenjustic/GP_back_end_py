@@ -63,6 +63,33 @@ def _ensure_site_tasks_columns() -> None:
                     "ADD COLUMN on_sale BOOLEAN NOT NULL DEFAULT 0"
                 )
             )
+    if "embedding" not in columns:
+        logger.warning("site_tasks.embedding 缺失，正在补齐字段")
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "ALTER TABLE site_tasks "
+                    "ADD COLUMN embedding JSON"
+                )
+            )
+    if "coord_3d" not in columns:
+        logger.warning("site_tasks.coord_3d 缺失，正在补齐字段")
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "ALTER TABLE site_tasks "
+                    "ADD COLUMN coord_3d JSON"
+                )
+            )
+    if "embedding_updated_at" not in columns:
+        logger.warning("site_tasks.embedding_updated_at 缺失，正在补齐字段")
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "ALTER TABLE site_tasks "
+                    "ADD COLUMN embedding_updated_at DATETIME"
+                )
+            )
 
 
 def get_db():

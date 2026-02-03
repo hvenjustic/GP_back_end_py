@@ -95,6 +95,11 @@ class SiteTask(Base):
     crawl_duration_ms = Column(BigInteger, default=0, nullable=False)
     llm_processed_at = Column(DateTime)
     llm_duration_ms = Column(BigInteger, default=0, nullable=False)
+    # 图嵌入向量（高维）
+    embedding = Column(JSON)
+    # 降维后的三维坐标
+    coord_3d = Column(JSON)
+    embedding_updated_at = Column(DateTime)
     created_at = Column(DateTime, default=utcnow, nullable=False)
     updated_at = Column(DateTime, default=utcnow, nullable=False)
 
