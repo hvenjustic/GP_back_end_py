@@ -252,6 +252,8 @@ class EmbeddingStatusResponse(BaseModel):
     total: int
     message: str
     error: str | None = None
+    results: list[dict[str, Any]] | None = None
+    total_duration_ms: int | None = None
 
 
 class EmbeddingResultItem(BaseModel):

@@ -201,16 +201,15 @@ embedding_group.add_api_route(
     status_code=202,
 )
 embedding_group.add_api_route(
-    "/compute/sync",
-    embedding.compute_embeddings_sync,
-    methods=["POST"],
-    response_model=EmbeddingListResponse,
-)
-embedding_group.add_api_route(
     "/status",
     embedding.get_embedding_status,
     methods=["GET"],
     response_model=EmbeddingStatusResponse,
+)
+embedding_group.add_api_route(
+    "/tasks/status",
+    embedding.get_embedding_task_status,
+    methods=["GET"],
 )
 embedding_group.add_api_route(
     "",

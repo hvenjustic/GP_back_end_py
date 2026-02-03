@@ -2,9 +2,9 @@
 图嵌入API处理器
 
 提供API端点来：
-1. 计算图谱的高维嵌入和3D坐标
+1. 异步计算图谱的高维嵌入和3D坐标
 2. 获取已计算的嵌入数据
-3. 获取嵌入计算状态
+3. 获取嵌入计算状态和计时信息
 """
 
 from __future__ import annotations
@@ -26,7 +26,6 @@ from app.schemas import (
     EmbeddingCoord3DResponse,
 )
 from app.services import embedding_service
-from app.services.neo4j_service import neo4j_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +36,8 @@ _embedding_task_status = {
     "total": 0,
     "message": "",
     "error": None,
+    "results": [],  # 存储计算结果
+    "total_duration_ms": 0,
 }
 
 
@@ -49,16 +50,17 @@ def _reset_task_status():
         "total": 0,
         "message": "",
         "error": None,
+        "results": [],
+        "total_duration_ms": 0,
     }
 
 
 def _run_embedding_task(
+    task_ids: list[int],
     embedding_method: str,
     reduction_method: str,
     embedding_dim: int,
     use_gpu: bool,
-    save_node_embeddings: bool,
-    site_ids: Optional[list[int]],
 ):
     """后台运行嵌入计算任务"""
     global _embedding_task_status
@@ -71,26 +73,42 @@ def _run_embedding_task(
         _embedding_task_status["is_running"] = True
         _embedding_task_status["message"] = "正在获取图谱数据..."
         _embedding_task_status["error"] = None
+        _embedding_task_status["total"] = len(task_ids)
         
         # 计算嵌入
         _embedding_task_status["message"] = f"正在使用 {embedding_method} 计算嵌入..."
         
-        results = embedding_service.compute_all_embeddings(
+        results = embedding_service.compute_embeddings_for_tasks(
             settings=settings,
             db=db,
+            task_ids=task_ids,
             embedding_method=embedding_method,
             reduction_method=reduction_method,
             embedding_dim=embedding_dim,
             use_gpu=use_gpu,
             save_to_db=True,
             save_to_neo4j=True,
-            save_node_embeddings=save_node_embeddings,
-            site_ids=site_ids,
         )
         
+        # 计算总耗时
+        total_duration = sum(r.duration_ms for r in results)
+        
+        # 存储结果摘要
+        result_items = []
+        for r in results:
+            result_items.append({
+                "task_id": r.site_id,
+                "name": r.site_name,
+                "node_count": r.node_count,
+                "edge_count": r.edge_count,
+                "embedding_dim": len(r.high_dim_embedding),
+                "duration_ms": r.duration_ms,
+            })
+        
         _embedding_task_status["progress"] = len(results)
-        _embedding_task_status["total"] = len(results)
-        _embedding_task_status["message"] = f"完成！处理了 {len(results)} 个图谱"
+        _embedding_task_status["results"] = result_items
+        _embedding_task_status["total_duration_ms"] = total_duration
+        _embedding_task_status["message"] = f"完成！处理了 {len(results)} 个任务，总耗时 {total_duration}ms"
         
     except Exception as e:
         logger.exception("Embedding task failed")
@@ -104,102 +122,63 @@ def _run_embedding_task(
 async def compute_embeddings(
     request: EmbeddingComputeRequest,
     background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
 ) -> EmbeddingComputeResponse:
     """
-    计算图谱嵌入向量和3D坐标
+    异步计算图谱嵌入向量和3D坐标
     
     POST /api/embeddings/compute
     
-    该接口会在后台异步计算嵌入，可以通过 GET /api/embeddings/status 查询进度
+    该接口会在后台异步计算嵌入，可以通过 GET /api/embeddings/status 查询进度和结果
     """
-    settings = get_settings()
-    
-    # 检查Neo4j是否启用
-    if not neo4j_enabled(settings):
-        raise HTTPException(status_code=503, detail="Neo4j未配置或不可用")
-    
     # 检查是否有任务正在运行
     if _embedding_task_status["is_running"]:
         raise HTTPException(status_code=409, detail="已有嵌入计算任务正在运行")
+    
+    # 验证task_ids
+    if not request.site_ids:
+        raise HTTPException(status_code=400, detail="site_ids 不能为空")
+    
+    task_ids = [int(x) for x in request.site_ids if int(x) > 0]
+    if not task_ids:
+        raise HTTPException(status_code=400, detail="没有有效的任务ID")
+    
+    # 检查任务是否存在
+    from app.models import SiteTask
+    tasks = db.query(SiteTask).filter(SiteTask.id.in_(task_ids)).all()
+    if not tasks:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    
+    # 检查哪些任务有图谱数据
+    valid_ids = [int(t.id) for t in tasks if t.graph_json]
+    if not valid_ids:
+        raise HTTPException(status_code=400, detail="所有任务都没有图谱数据，请先构建知识图谱")
     
     # 重置状态
     _reset_task_status()
     _embedding_task_status["is_running"] = True
     _embedding_task_status["message"] = "任务已提交，正在启动..."
+    _embedding_task_status["total"] = len(valid_ids)
     
     # 启动后台任务
     background_tasks.add_task(
         _run_embedding_task,
+        task_ids=valid_ids,
         embedding_method=request.embedding_method,
         reduction_method=request.reduction_method,
         embedding_dim=request.embedding_dim,
         use_gpu=request.use_gpu,
-        save_node_embeddings=request.save_node_embeddings,
-        site_ids=request.site_ids,
     )
     
     return EmbeddingComputeResponse(
         status="accepted",
-        message="嵌入计算任务已提交，请通过 /api/embeddings/status 查询进度",
+        message=f"嵌入计算任务已提交（{len(valid_ids)}个任务），请通过 /api/embeddings/status 查询进度",
     )
-
-
-async def compute_embeddings_sync(
-    request: EmbeddingComputeRequest,
-    db: Session = Depends(get_db),
-) -> EmbeddingListResponse:
-    """
-    同步计算图谱嵌入向量和3D坐标（等待完成后返回结果）
-    
-    POST /api/embeddings/compute/sync
-    
-    注意：对于大型图谱，此操作可能需要较长时间
-    """
-    settings = get_settings()
-    
-    # 检查Neo4j是否启用
-    if not neo4j_enabled(settings):
-        raise HTTPException(status_code=503, detail="Neo4j未配置或不可用")
-    
-    try:
-        results = embedding_service.compute_all_embeddings(
-            settings=settings,
-            db=db,
-            embedding_method=request.embedding_method,
-            reduction_method=request.reduction_method,
-            embedding_dim=request.embedding_dim,
-            use_gpu=request.use_gpu,
-            save_to_db=True,
-            save_to_neo4j=True,
-            save_node_embeddings=request.save_node_embeddings,
-            site_ids=request.site_ids,
-        )
-        
-        items = [
-            EmbeddingResultItem(
-                site_id=r.site_id,
-                site_name=r.site_name,
-                site_url=r.site_url,
-                embedding=r.high_dim_embedding,
-                coord_3d=r.coord_3d,
-                node_count=len(r.node_embeddings) if r.node_embeddings else 0,
-            )
-            for r in results
-        ]
-        
-        return EmbeddingListResponse(
-            items=items,
-            total=len(items),
-        )
-        
-    except Exception as e:
-        logger.exception("Embedding computation failed")
-        raise HTTPException(status_code=500, detail=f"嵌入计算失败: {str(e)}")
 
 
 async def get_embedding_status() -> EmbeddingStatusResponse:
     """
-    获取嵌入计算任务状态
+    获取嵌入计算任务状态和计时信息
     
     GET /api/embeddings/status
     """
@@ -209,6 +188,8 @@ async def get_embedding_status() -> EmbeddingStatusResponse:
         total=_embedding_task_status["total"],
         message=_embedding_task_status["message"],
         error=_embedding_task_status["error"],
+        results=_embedding_task_status.get("results"),
+        total_duration_ms=_embedding_task_status.get("total_duration_ms"),
     )
 
 
@@ -233,7 +214,7 @@ async def list_embeddings(
             raise HTTPException(status_code=400, detail="site_ids格式错误，应为逗号分隔的整数")
     
     try:
-        # 优先从MySQL获取
+        # 从MySQL获取
         data = embedding_service.get_embeddings_from_mysql(db, parsed_site_ids)
         
         items = [
@@ -303,3 +284,48 @@ async def get_3d_coordinates(
         logger.exception("Failed to fetch 3D coordinates")
         raise HTTPException(status_code=500, detail=f"获取3D坐标失败: {str(e)}")
 
+
+async def get_embedding_task_status(
+    task_ids: Optional[str] = None,
+    db: Session = Depends(get_db),
+) -> dict:
+    """
+    获取指定任务的嵌入状态和计时信息
+    
+    GET /api/embeddings/tasks/status
+    
+    Args:
+        task_ids: 可选，逗号分隔的task_id列表
+    """
+    parsed_ids = None
+    if task_ids:
+        try:
+            parsed_ids = [int(x.strip()) for x in task_ids.split(",") if x.strip()]
+        except ValueError:
+            raise HTTPException(status_code=400, detail="task_ids格式错误，应为逗号分隔的整数")
+    
+    try:
+        status_list = embedding_service.get_embedding_status_for_tasks(db, parsed_ids)
+        
+        # 统计信息
+        from app.models import SiteTask
+        total_with_embedding = db.query(SiteTask).filter(SiteTask.embedding.isnot(None)).count()
+        total_with_graph = db.query(SiteTask).filter(SiteTask.graph_json.isnot(None)).count()
+        total_buildable = db.query(SiteTask).filter(
+            SiteTask.graph_json.isnot(None),
+            SiteTask.embedding.is_(None)
+        ).count()
+        
+        return {
+            "summary": {
+                "total_with_embedding": total_with_embedding,
+                "total_with_graph": total_with_graph,
+                "total_buildable": total_buildable,
+            },
+            "count": len(status_list),
+            "items": status_list,
+        }
+        
+    except Exception as e:
+        logger.exception("Failed to fetch embedding status")
+        raise HTTPException(status_code=500, detail=f"获取嵌入状态失败: {str(e)}")

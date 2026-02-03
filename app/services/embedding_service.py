@@ -2,18 +2,20 @@
 图嵌入服务：将知识图谱转换为高维向量并降维到3D坐标
 
 支持功能：
-1. 从Neo4j获取图谱数据
+1. 从MySQL的graph_json字段或Neo4j获取图谱数据
 2. 使用Node2Vec/Graph2Vec进行图嵌入
 3. 使用PyTorch MPS后端(Apple M系列芯片)进行GPU加速
 4. 使用UMAP进行降维到3D
 5. 将嵌入向量和3D坐标存储到MySQL(site_tasks表)和Neo4j
+6. 支持计时和异步处理
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 import json
 import hashlib
@@ -47,6 +49,9 @@ class EmbeddingResult:
     site_url: str
     high_dim_embedding: list[float]
     coord_3d: list[float]
+    duration_ms: int = 0
+    node_count: int = 0
+    edge_count: int = 0
     node_embeddings: Optional[dict[str, list[float]]] = None
     node_coords_3d: Optional[dict[str, list[float]]] = None
 
@@ -81,6 +86,102 @@ def _get_database(settings: Settings) -> str | None:
     """获取数据库名称"""
     value = (settings.neo4j_database or "").strip()
     return value or None
+
+
+def fetch_graph_from_mysql(db: Session, task_id: int) -> Optional[GraphData]:
+    """
+    从MySQL的site_tasks表的graph_json字段获取图谱数据
+    
+    Args:
+        db: 数据库会话
+        task_id: 任务ID
+        
+    Returns:
+        GraphData | None: 图谱数据，如果不存在返回None
+    """
+    task = db.query(SiteTask).filter(SiteTask.id == task_id).first()
+    if not task:
+        logger.warning(f"SiteTask {task_id} not found")
+        return None
+    
+    if not task.graph_json:
+        logger.warning(f"SiteTask {task_id} has no graph_json")
+        return None
+    
+    try:
+        graph_data = json.loads(task.graph_json) if isinstance(task.graph_json, str) else task.graph_json
+    except json.JSONDecodeError:
+        logger.error(f"Failed to parse graph_json for task {task_id}")
+        return None
+    
+    # 解析entities和relations
+    entities = graph_data.get("entities", [])
+    relations = graph_data.get("relations", [])
+    
+    if not entities:
+        logger.warning(f"SiteTask {task_id} has no entities in graph_json")
+        return None
+    
+    # 构建nodes
+    nodes = []
+    for ent in entities:
+        if not isinstance(ent, dict):
+            continue
+        name = str(ent.get("name") or "").strip()
+        if not name:
+            continue
+        nodes.append({
+            "name": name,
+            "type": str(ent.get("type") or ent.get("type_level_2") or ent.get("type_level_1") or "unknown").strip(),
+            "description": str(ent.get("description") or "").strip(),
+            "type_level_1": str(ent.get("type_level_1") or "").strip(),
+            "type_level_2": str(ent.get("type_level_2") or "").strip(),
+        })
+    
+    # 构建node_id_map
+    node_id_map = {node["name"]: idx for idx, node in enumerate(nodes)}
+    
+    # 构建edges
+    edges = []
+    for rel in relations:
+        if not isinstance(rel, dict):
+            continue
+        source = str(rel.get("source") or "").strip()
+        target = str(rel.get("target") or "").strip()
+        if source and target and source in node_id_map and target in node_id_map:
+            edges.append({
+                "source": source,
+                "target": target,
+                "type": str(rel.get("type") or "RELATED_TO").strip(),
+            })
+    
+    return GraphData(
+        site_id=task.id,
+        site_name=task.site_name or task.name or "",
+        site_url=task.url or "",
+        nodes=nodes,
+        edges=edges,
+        node_id_map=node_id_map,
+    )
+
+
+def fetch_graphs_from_mysql(db: Session, task_ids: list[int]) -> list[GraphData]:
+    """
+    从MySQL批量获取图谱数据
+    
+    Args:
+        db: 数据库会话
+        task_ids: 任务ID列表
+        
+    Returns:
+        list[GraphData]: 图谱数据列表
+    """
+    graphs = []
+    for task_id in task_ids:
+        graph = fetch_graph_from_mysql(db, task_id)
+        if graph:
+            graphs.append(graph)
+    return graphs
 
 
 def fetch_all_graphs(settings: Settings) -> list[GraphData]:
@@ -565,9 +666,10 @@ def save_embeddings_to_mysql(
         if site_task:
             site_task.embedding = result.high_dim_embedding
             site_task.coord_3d = result.coord_3d
+            site_task.embedding_duration_ms = result.duration_ms
             site_task.embedding_updated_at = datetime.utcnow()
             site_task.updated_at = datetime.utcnow()
-            logger.info(f"Saved embedding to MySQL for site_task {result.site_id}")
+            logger.info(f"Saved embedding to MySQL for site_task {result.site_id}, duration={result.duration_ms}ms")
         else:
             logger.warning(f"SiteTask {result.site_id} not found in MySQL")
     
@@ -824,4 +926,171 @@ def get_embeddings_from_neo4j(
             return [dict(record) for record in result]
     finally:
         driver.close()
+
+
+def compute_embeddings_for_tasks(
+    settings: Settings,
+    db: Session,
+    task_ids: list[int],
+    embedding_method: str = "gnn",
+    reduction_method: str = "umap",
+    embedding_dim: int = 128,
+    use_gpu: bool = True,
+    save_to_db: bool = True,
+    save_to_neo4j: bool = True,
+) -> list[EmbeddingResult]:
+    """
+    为指定的任务计算嵌入向量和3D坐标（从MySQL的graph_json获取数据）
+    
+    这是主要的接口函数，用于处理指定任务的嵌入计算。
+    
+    Args:
+        settings: 配置
+        db: 数据库会话
+        task_ids: 任务ID列表
+        embedding_method: 嵌入方法 ("gnn" 或 "node2vec")
+        reduction_method: 降维方法 ("umap" 或 "tsne")
+        embedding_dim: 嵌入维度
+        use_gpu: 是否使用GPU加速
+        save_to_db: 是否保存到MySQL
+        save_to_neo4j: 是否保存到Neo4j
+        
+    Returns:
+        list[EmbeddingResult]: 嵌入结果列表（包含计时信息）
+    """
+    if not task_ids:
+        logger.warning("No task_ids provided")
+        return []
+    
+    # 从MySQL获取图数据
+    graphs = fetch_graphs_from_mysql(db, task_ids)
+    
+    if not graphs:
+        logger.warning(f"No valid graphs found for task_ids: {task_ids}")
+        return []
+    
+    logger.info(f"Processing {len(graphs)} graphs with {embedding_method} embedding and {reduction_method} reduction")
+    
+    results = []
+    all_graph_embeddings = []
+    all_node_embeddings_list = []
+    graph_timings = []
+    
+    # 计算每个图的嵌入
+    for graph in graphs:
+        start_time = time.time()
+        logger.info(f"Computing embeddings for task {graph.site_id}: {len(graph.nodes)} nodes, {len(graph.edges)} edges")
+        
+        if embedding_method == "gnn":
+            graph_embedding, node_embeddings = compute_graph_embedding_gnn(
+                graph,
+                embedding_dim=embedding_dim,
+                use_gpu=use_gpu,
+            )
+        elif embedding_method == "node2vec":
+            node_embeddings = compute_node_embeddings_node2vec(
+                graph,
+                dimensions=embedding_dim,
+            )
+            graph_embedding = compute_graph_embedding_aggregated(node_embeddings, method="mean")
+        else:
+            raise ValueError(f"Unknown embedding method: {embedding_method}")
+        
+        elapsed_ms = int((time.time() - start_time) * 1000)
+        graph_timings.append(elapsed_ms)
+        
+        all_graph_embeddings.append(graph_embedding)
+        all_node_embeddings_list.append(node_embeddings)
+    
+    # 将图嵌入堆叠成矩阵
+    graph_embeddings_matrix = np.array(all_graph_embeddings)
+    
+    # 降维到3D
+    reduction_start = time.time()
+    logger.info(f"Reducing {len(graphs)} graph embeddings to 3D using {reduction_method}")
+    if reduction_method == "umap":
+        graph_coords_3d = reduce_to_3d_umap(graph_embeddings_matrix)
+    elif reduction_method == "tsne":
+        graph_coords_3d = reduce_to_3d_tsne(graph_embeddings_matrix)
+    else:
+        raise ValueError(f"Unknown reduction method: {reduction_method}")
+    
+    reduction_time_ms = int((time.time() - reduction_start) * 1000)
+    # 将降维时间平均分配到每个图
+    reduction_per_graph = reduction_time_ms // len(graphs) if graphs else 0
+    
+    # 构建结果
+    for i, graph in enumerate(graphs):
+        node_embeddings = all_node_embeddings_list[i]
+        total_duration_ms = graph_timings[i] + reduction_per_graph
+        
+        result = EmbeddingResult(
+            site_id=graph.site_id,
+            site_name=graph.site_name,
+            site_url=graph.site_url,
+            high_dim_embedding=all_graph_embeddings[i].tolist(),
+            coord_3d=graph_coords_3d[i].tolist(),
+            duration_ms=total_duration_ms,
+            node_count=len(graph.nodes),
+            edge_count=len(graph.edges),
+            node_embeddings={k: v.tolist() for k, v in node_embeddings.items()} if node_embeddings else None,
+        )
+        results.append(result)
+    
+    # 保存到MySQL
+    if save_to_db:
+        logger.info("Saving embeddings to MySQL (site_tasks table)")
+        save_embeddings_to_mysql(db, results)
+    
+    # 保存到Neo4j
+    if save_to_neo4j:
+        logger.info("Saving embeddings to Neo4j")
+        save_embeddings_to_neo4j(settings, results, save_node_embeddings=False)
+    
+    total_time = sum(graph_timings) + reduction_time_ms
+    logger.info(f"Completed embedding computation for {len(results)} tasks, total time: {total_time}ms")
+    
+    return results
+
+
+def get_embedding_status_for_tasks(
+    db: Session,
+    task_ids: Optional[list[int]] = None,
+) -> list[dict[str, Any]]:
+    """
+    获取任务的嵌入状态信息
+    
+    Args:
+        db: 数据库会话
+        task_ids: 任务ID列表，None表示获取所有有嵌入的任务
+        
+    Returns:
+        list[dict]: 状态信息列表
+    """
+    query = db.query(SiteTask)
+    
+    if task_ids:
+        query = query.filter(SiteTask.id.in_(task_ids))
+    else:
+        query = query.filter(SiteTask.embedding.isnot(None))
+    
+    results = []
+    for task in query.all():
+        has_embedding = task.embedding is not None
+        has_coord_3d = task.coord_3d is not None
+        
+        results.append({
+            "task_id": task.id,
+            "name": task.name or task.site_name,
+            "site_name": task.site_name,
+            "url": task.url,
+            "has_graph": bool(task.graph_json),
+            "has_embedding": has_embedding,
+            "has_coord_3d": has_coord_3d,
+            "embedding_dim": len(task.embedding) if has_embedding else 0,
+            "embedding_duration_ms": task.embedding_duration_ms or 0,
+            "embedding_updated_at": task.embedding_updated_at,
+        })
+    
+    return results
 

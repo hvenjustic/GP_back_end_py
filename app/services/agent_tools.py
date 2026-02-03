@@ -27,6 +27,7 @@ from app.services.queue_keys import (
     GRAPH_TASK_MAP_KEY,
 )
 from app.services.redis_client import get_redis_client
+from app.services import embedding_service
 
 
 @dataclass(frozen=True)
@@ -1120,6 +1121,184 @@ def build_default_registry(settings: Settings) -> ToolRegistry:
                 },
             },
             handler=set_products_on_sale,
+        )
+    )
+
+    def build_embedding(task_ids: list[int], embedding_method: str = "gnn", reduction_method: str = "umap") -> str:
+        """
+        为指定任务构建高维向量和三维坐标
+        
+        Args:
+            task_ids: 任务ID列表，例如 [2] 或 [2, 4, 5]
+            embedding_method: 嵌入方法，支持 "gnn" 或 "node2vec"，默认 "gnn"
+            reduction_method: 降维方法，支持 "umap" 或 "tsne"，默认 "umap"
+        """
+        ids = [int(item) for item in (task_ids or []) if int(item) > 0]
+        if not ids:
+            return json.dumps({"status": "error", "error": "task_ids 为空"}, ensure_ascii=False)
+        
+        db = SessionLocal()
+        try:
+            # 检查任务是否存在且有graph_json
+            tasks = db.query(SiteTask).filter(SiteTask.id.in_(ids)).all()
+            if not tasks:
+                return json.dumps({"status": "error", "error": "任务不存在"}, ensure_ascii=False)
+            
+            # 检查哪些任务有图谱数据
+            valid_ids = []
+            invalid_ids = []
+            for task in tasks:
+                if task.graph_json:
+                    valid_ids.append(int(task.id))
+                else:
+                    invalid_ids.append(int(task.id))
+            
+            if not valid_ids:
+                return json.dumps({
+                    "status": "error",
+                    "error": "所有任务都没有图谱数据，请先构建知识图谱",
+                    "invalid_ids": invalid_ids,
+                }, ensure_ascii=False)
+            
+            # 计算嵌入
+            results = embedding_service.compute_embeddings_for_tasks(
+                settings=settings,
+                db=db,
+                task_ids=valid_ids,
+                embedding_method=embedding_method,
+                reduction_method=reduction_method,
+                use_gpu=True,
+                save_to_db=True,
+                save_to_neo4j=True,
+            )
+            
+            # 构建返回结果
+            result_items = []
+            total_duration = 0
+            for r in results:
+                result_items.append({
+                    "task_id": r.site_id,
+                    "name": r.site_name,
+                    "node_count": r.node_count,
+                    "edge_count": r.edge_count,
+                    "embedding_dim": len(r.high_dim_embedding),
+                    "coord_3d": r.coord_3d,
+                    "duration_ms": r.duration_ms,
+                })
+                total_duration += r.duration_ms
+            
+            response = {
+                "status": "completed",
+                "processed": len(results),
+                "total_duration_ms": total_duration,
+                "embedding_method": embedding_method,
+                "reduction_method": reduction_method,
+                "results": result_items,
+            }
+            if invalid_ids:
+                response["skipped_ids"] = invalid_ids
+                response["skipped_reason"] = "没有图谱数据"
+            
+            return json.dumps(response, ensure_ascii=False, default=str)
+            
+        except Exception as exc:
+            db.rollback()
+            return json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False)
+        finally:
+            db.close()
+    
+    def embedding_status(task_ids: list[int] | None = None, limit: int = 20) -> str:
+        """
+        查询任务的嵌入状态和计时信息
+        
+        Args:
+            task_ids: 任务ID列表，为空则查询所有有嵌入的任务
+            limit: 返回结果数量限制，默认20
+        """
+        limit = max(1, min(int(limit or 20), 200))
+        db = SessionLocal()
+        try:
+            ids = None
+            if task_ids:
+                ids = [int(item) for item in task_ids if int(item) > 0]
+            
+            # 获取状态信息
+            status_list = embedding_service.get_embedding_status_for_tasks(db, ids)
+            
+            # 限制返回数量
+            status_list = status_list[:limit]
+            
+            # 统计信息
+            total_with_embedding = db.query(SiteTask).filter(SiteTask.embedding.isnot(None)).count()
+            total_with_graph = db.query(SiteTask).filter(SiteTask.graph_json.isnot(None)).count()
+            total_buildable = db.query(SiteTask).filter(
+                SiteTask.graph_json.isnot(None),
+                SiteTask.embedding.is_(None)
+            ).count()
+            
+            return json.dumps({
+                "status": "ok",
+                "summary": {
+                    "total_with_embedding": total_with_embedding,
+                    "total_with_graph": total_with_graph,
+                    "total_buildable": total_buildable,
+                },
+                "count": len(status_list),
+                "items": status_list,
+            }, ensure_ascii=False, default=str)
+            
+        finally:
+            db.close()
+
+    registry.register(
+        ToolDefinition(
+            name="build_embedding",
+            description="为指定任务构建高维向量和三维坐标。使用示例：帮我构建任务2的三维向量；帮我构建任务2,4,5的高维向量。",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "task_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "任务ID列表，例如 [2] 或 [2, 4, 5]",
+                    },
+                    "embedding_method": {
+                        "type": "string",
+                        "description": "嵌入方法：gnn（使用图神经网络，支持GPU加速）或 node2vec（随机游走）",
+                        "default": "gnn",
+                    },
+                    "reduction_method": {
+                        "type": "string",
+                        "description": "降维方法：umap（推荐，更快）或 tsne",
+                        "default": "umap",
+                    },
+                },
+                "required": ["task_ids"],
+            },
+            handler=build_embedding,
+        )
+    )
+    
+    registry.register(
+        ToolDefinition(
+            name="embedding_status",
+            description="查询任务的嵌入状态，包括是否已构建高维向量、三维坐标、构建耗时等信息。",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "task_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "要查询的任务ID列表，为空则查询所有有嵌入的任务",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "返回结果数量限制，默认20",
+                        "default": 20,
+                    },
+                },
+            },
+            handler=embedding_status,
         )
     )
 

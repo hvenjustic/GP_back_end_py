@@ -90,6 +90,15 @@ def _ensure_site_tasks_columns() -> None:
                     "ADD COLUMN embedding_updated_at DATETIME"
                 )
             )
+    if "embedding_duration_ms" not in columns:
+        logger.warning("site_tasks.embedding_duration_ms 缺失，正在补齐字段")
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "ALTER TABLE site_tasks "
+                    "ADD COLUMN embedding_duration_ms BIGINT NOT NULL DEFAULT 0"
+                )
+            )
 
 
 def get_db():

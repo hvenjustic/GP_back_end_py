@@ -99,6 +99,8 @@ class SiteTask(Base):
     embedding = Column(JSON)
     # 降维后的三维坐标
     coord_3d = Column(JSON)
+    # 嵌入计算耗时(毫秒)
+    embedding_duration_ms = Column(BigInteger, default=0, nullable=False)
     embedding_updated_at = Column(DateTime)
     created_at = Column(DateTime, default=utcnow, nullable=False)
     updated_at = Column(DateTime, default=utcnow, nullable=False)
