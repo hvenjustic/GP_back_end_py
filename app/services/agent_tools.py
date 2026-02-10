@@ -1124,13 +1124,13 @@ def build_default_registry(settings: Settings) -> ToolRegistry:
         )
     )
 
-    def build_embedding(task_ids: list[int], embedding_method: str = "gnn", reduction_method: str = "umap") -> str:
+    def build_embedding(task_ids: list[int], embedding_method: str = "graph2vec", reduction_method: str = "umap") -> str:
         """
         为指定任务构建高维向量和三维坐标
         
         Args:
             task_ids: 任务ID列表，例如 [2] 或 [2, 4, 5]
-            embedding_method: 嵌入方法，支持 "gnn" 或 "node2vec"，默认 "gnn"
+            embedding_method: 嵌入方法，支持 "graph2vec"(默认), "gnn" 或 "node2vec"
             reduction_method: 降维方法，支持 "umap" 或 "tsne"，默认 "umap"
         """
         ids = [int(item) for item in (task_ids or []) if int(item) > 0]
@@ -1253,7 +1253,7 @@ def build_default_registry(settings: Settings) -> ToolRegistry:
     registry.register(
         ToolDefinition(
             name="build_embedding",
-            description="为指定任务构建高维向量和三维坐标。使用示例：帮我构建任务2的三维向量；帮我构建任务2,4,5的高维向量。",
+            description="为指定任务构建高维向量和三维坐标。使用Graph2Vec捕捉图谱的全局结构特征。使用示例：帮我构建任务2的三维向量；帮我构建任务2,4,5的高维向量。",
             parameters={
                 "type": "object",
                 "properties": {
@@ -1264,12 +1264,12 @@ def build_default_registry(settings: Settings) -> ToolRegistry:
                     },
                     "embedding_method": {
                         "type": "string",
-                        "description": "嵌入方法：gnn（使用图神经网络，支持GPU加速）或 node2vec（随机游走）",
-                        "default": "gnn",
+                        "description": "嵌入方法：graph2vec（默认，捕捉全局结构）、gnn（图神经网络）或 node2vec（随机游走）",
+                        "default": "graph2vec",
                     },
                     "reduction_method": {
                         "type": "string",
-                        "description": "降维方法：umap（推荐，更快）或 tsne",
+                        "description": "降维方法：umap（默认，推荐）或 tsne",
                         "default": "umap",
                     },
                 },

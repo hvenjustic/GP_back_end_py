@@ -368,6 +368,158 @@ def _compute_node_features(graph_data: GraphData, embedding_dim: int = 64) -> np
     return features
 
 
+def compute_graph_embeddings_graph2vec(
+    graphs: list[GraphData],
+    dimensions: int = 128,
+    wl_iterations: int = 2,
+    epochs: int = 10,
+    learning_rate: float = 0.025,
+    min_count: int = 5,
+) -> list[np.ndarray]:
+    """
+    使用Graph2Vec计算图级嵌入
+    
+    Graph2Vec通过Weisfeiler-Lehman子图特征来捕捉图的全局结构信息，
+    然后使用类似Doc2Vec的方法学习图的嵌入表示。
+    
+    Args:
+        graphs: 图数据列表
+        dimensions: 嵌入维度
+        wl_iterations: Weisfeiler-Lehman迭代次数，越大捕捉越高阶的结构
+        epochs: 训练轮数
+        learning_rate: 学习率
+        min_count: 最小词频
+        
+    Returns:
+        list[np.ndarray]: 每个图的嵌入向量列表
+    """
+    from karateclub import Graph2Vec
+    import networkx as nx
+    
+    if not graphs:
+        return []
+    
+    # 将GraphData转换为NetworkX图（Graph2Vec需要整数节点标签）
+    nx_graphs = []
+    for graph_data in graphs:
+        G = nx.Graph()  # Graph2Vec需要无向图
+        
+        # 创建节点名到整数ID的映射
+        node_to_int = {name: idx for idx, name in enumerate(graph_data.node_id_map.keys())}
+        
+        # 添加节点（使用整数ID）
+        for node_name in graph_data.node_id_map.keys():
+            G.add_node(node_to_int[node_name])
+        
+        # 添加边
+        for edge in graph_data.edges:
+            source = edge.get("source")
+            target = edge.get("target")
+            if source in node_to_int and target in node_to_int:
+                G.add_edge(node_to_int[source], node_to_int[target])
+        
+        # 如果图为空或只有孤立节点，添加自环确保图有效
+        if G.number_of_edges() == 0:
+            for node in G.nodes():
+                G.add_edge(node, node)
+        
+        nx_graphs.append(G)
+    
+    logger.info(f"Training Graph2Vec on {len(nx_graphs)} graphs, dimensions={dimensions}, wl_iterations={wl_iterations}")
+    
+    # 调整min_count以适应小图
+    actual_min_count = min(min_count, max(1, len(nx_graphs) // 2))
+    
+    # 创建并训练Graph2Vec模型
+    model = Graph2Vec(
+        dimensions=dimensions,
+        wl_iterations=wl_iterations,
+        epochs=epochs,
+        learning_rate=learning_rate,
+        min_count=actual_min_count,
+    )
+    
+    model.fit(nx_graphs)
+    
+    # 获取所有图的嵌入
+    embeddings = model.get_embedding()
+    
+    logger.info(f"Graph2Vec training completed, embedding shape: {embeddings.shape}")
+    
+    return [embeddings[i] for i in range(len(graphs))]
+
+
+def compute_single_graph_embedding_graph2vec(
+    graph_data: GraphData,
+    dimensions: int = 128,
+    wl_iterations: int = 2,
+) -> np.ndarray:
+    """
+    为单个图计算Graph2Vec嵌入
+    
+    注意：Graph2Vec设计用于多图场景，单图时效果可能不如多图一起训练。
+    对于单图，会创建一些随机扰动图来辅助训练。
+    
+    Args:
+        graph_data: 图数据
+        wl_iterations: WL迭代次数
+        dimensions: 嵌入维度
+        
+    Returns:
+        np.ndarray: 图嵌入向量
+    """
+    import networkx as nx
+    from karateclub import Graph2Vec
+    import random
+    
+    # 构建主图
+    G = nx.Graph()
+    node_to_int = {name: idx for idx, name in enumerate(graph_data.node_id_map.keys())}
+    
+    for node_name in graph_data.node_id_map.keys():
+        G.add_node(node_to_int[node_name])
+    
+    for edge in graph_data.edges:
+        source = edge.get("source")
+        target = edge.get("target")
+        if source in node_to_int and target in node_to_int:
+            G.add_edge(node_to_int[source], node_to_int[target])
+    
+    if G.number_of_edges() == 0:
+        for node in G.nodes():
+            G.add_edge(node, node)
+    
+    # 创建扰动图来辅助训练（Graph2Vec需要多个图）
+    graphs = [G]
+    num_augmented = min(9, max(4, G.number_of_nodes() // 2))
+    
+    for _ in range(num_augmented):
+        G_aug = G.copy()
+        # 随机添加或删除一些边
+        edges = list(G_aug.edges())
+        if edges and random.random() > 0.5:
+            # 随机删除一条边
+            edge_to_remove = random.choice(edges)
+            G_aug.remove_edge(*edge_to_remove)
+        if G_aug.number_of_nodes() > 1 and random.random() > 0.5:
+            # 随机添加一条边
+            nodes = list(G_aug.nodes())
+            n1, n2 = random.sample(nodes, 2)
+            G_aug.add_edge(n1, n2)
+        graphs.append(G_aug)
+    
+    model = Graph2Vec(
+        dimensions=dimensions,
+        wl_iterations=wl_iterations,
+        epochs=10,
+        min_count=1,
+    )
+    model.fit(graphs)
+    
+    embeddings = model.get_embedding()
+    return embeddings[0]  # 返回原始图的嵌入
+
+
 def compute_node_embeddings_node2vec(
     graph_data: GraphData,
     dimensions: int = 128,
@@ -932,7 +1084,7 @@ def compute_embeddings_for_tasks(
     settings: Settings,
     db: Session,
     task_ids: list[int],
-    embedding_method: str = "gnn",
+    embedding_method: str = "graph2vec",
     reduction_method: str = "umap",
     embedding_dim: int = 128,
     use_gpu: bool = True,
@@ -948,10 +1100,10 @@ def compute_embeddings_for_tasks(
         settings: 配置
         db: 数据库会话
         task_ids: 任务ID列表
-        embedding_method: 嵌入方法 ("gnn" 或 "node2vec")
+        embedding_method: 嵌入方法 ("graph2vec"[默认], "gnn" 或 "node2vec")
         reduction_method: 降维方法 ("umap" 或 "tsne")
         embedding_dim: 嵌入维度
-        use_gpu: 是否使用GPU加速
+        use_gpu: 是否使用GPU加速（仅对gnn方法有效）
         save_to_db: 是否保存到MySQL
         save_to_neo4j: 是否保存到Neo4j
         
@@ -974,33 +1126,59 @@ def compute_embeddings_for_tasks(
     results = []
     all_graph_embeddings = []
     all_node_embeddings_list = []
-    graph_timings = []
     
-    # 计算每个图的嵌入
-    for graph in graphs:
-        start_time = time.time()
-        logger.info(f"Computing embeddings for task {graph.site_id}: {len(graph.nodes)} nodes, {len(graph.edges)} edges")
+    # 计算嵌入
+    start_time = time.time()
+    
+    if embedding_method == "graph2vec":
+        # Graph2Vec: 一次性处理所有图，捕捉全局结构
+        logger.info(f"Using Graph2Vec for {len(graphs)} graphs")
         
-        if embedding_method == "gnn":
+        if len(graphs) == 1:
+            # 单个图使用特殊处理
+            embedding = compute_single_graph_embedding_graph2vec(
+                graphs[0],
+                dimensions=embedding_dim,
+            )
+            all_graph_embeddings = [embedding]
+        else:
+            # 多个图一起训练，效果更好
+            all_graph_embeddings = compute_graph_embeddings_graph2vec(
+                graphs,
+                dimensions=embedding_dim,
+            )
+        
+        # Graph2Vec不产生节点级嵌入
+        all_node_embeddings_list = [None] * len(graphs)
+        
+    elif embedding_method == "gnn":
+        # GNN: 逐个处理每个图
+        for graph in graphs:
+            logger.info(f"Computing GNN embeddings for task {graph.site_id}: {len(graph.nodes)} nodes, {len(graph.edges)} edges")
             graph_embedding, node_embeddings = compute_graph_embedding_gnn(
                 graph,
                 embedding_dim=embedding_dim,
                 use_gpu=use_gpu,
             )
-        elif embedding_method == "node2vec":
+            all_graph_embeddings.append(graph_embedding)
+            all_node_embeddings_list.append(node_embeddings)
+            
+    elif embedding_method == "node2vec":
+        # Node2Vec: 通过聚合节点嵌入得到图嵌入
+        for graph in graphs:
+            logger.info(f"Computing Node2Vec embeddings for task {graph.site_id}: {len(graph.nodes)} nodes, {len(graph.edges)} edges")
             node_embeddings = compute_node_embeddings_node2vec(
                 graph,
                 dimensions=embedding_dim,
             )
             graph_embedding = compute_graph_embedding_aggregated(node_embeddings, method="mean")
-        else:
-            raise ValueError(f"Unknown embedding method: {embedding_method}")
-        
-        elapsed_ms = int((time.time() - start_time) * 1000)
-        graph_timings.append(elapsed_ms)
-        
-        all_graph_embeddings.append(graph_embedding)
-        all_node_embeddings_list.append(node_embeddings)
+            all_graph_embeddings.append(graph_embedding)
+            all_node_embeddings_list.append(node_embeddings)
+    else:
+        raise ValueError(f"Unknown embedding method: {embedding_method}. Supported: graph2vec, gnn, node2vec")
+    
+    embedding_time_ms = int((time.time() - start_time) * 1000)
+    logger.info(f"Embedding computation completed in {embedding_time_ms}ms")
     
     # 将图嵌入堆叠成矩阵
     graph_embeddings_matrix = np.array(all_graph_embeddings)
@@ -1013,16 +1191,18 @@ def compute_embeddings_for_tasks(
     elif reduction_method == "tsne":
         graph_coords_3d = reduce_to_3d_tsne(graph_embeddings_matrix)
     else:
-        raise ValueError(f"Unknown reduction method: {reduction_method}")
+        raise ValueError(f"Unknown reduction method: {reduction_method}. Supported: umap, tsne")
     
     reduction_time_ms = int((time.time() - reduction_start) * 1000)
-    # 将降维时间平均分配到每个图
-    reduction_per_graph = reduction_time_ms // len(graphs) if graphs else 0
+    logger.info(f"Dimension reduction completed in {reduction_time_ms}ms")
+    
+    total_time_ms = embedding_time_ms + reduction_time_ms
+    # 将时间平均分配到每个图
+    time_per_graph = total_time_ms // len(graphs) if graphs else 0
     
     # 构建结果
     for i, graph in enumerate(graphs):
-        node_embeddings = all_node_embeddings_list[i]
-        total_duration_ms = graph_timings[i] + reduction_per_graph
+        node_embeddings = all_node_embeddings_list[i] if i < len(all_node_embeddings_list) else None
         
         result = EmbeddingResult(
             site_id=graph.site_id,
@@ -1030,7 +1210,7 @@ def compute_embeddings_for_tasks(
             site_url=graph.site_url,
             high_dim_embedding=all_graph_embeddings[i].tolist(),
             coord_3d=graph_coords_3d[i].tolist(),
-            duration_ms=total_duration_ms,
+            duration_ms=time_per_graph,
             node_count=len(graph.nodes),
             edge_count=len(graph.edges),
             node_embeddings={k: v.tolist() for k, v in node_embeddings.items()} if node_embeddings else None,
@@ -1047,8 +1227,7 @@ def compute_embeddings_for_tasks(
         logger.info("Saving embeddings to Neo4j")
         save_embeddings_to_neo4j(settings, results, save_node_embeddings=False)
     
-    total_time = sum(graph_timings) + reduction_time_ms
-    logger.info(f"Completed embedding computation for {len(results)} tasks, total time: {total_time}ms")
+    logger.info(f"Completed embedding computation for {len(results)} tasks, total time: {total_time_ms}ms (embedding: {embedding_time_ms}ms, reduction: {reduction_time_ms}ms)")
     
     return results
 
